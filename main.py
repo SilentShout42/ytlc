@@ -163,12 +163,19 @@ def extract_video_id_from_filename(filename):
     return match.group(1)
 
 
-def search_messages_in_database(db_path, regex_pattern):
+def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matches=5):
     """
     Searches all videos in the SQLite database for messages matching a specific regex pattern.
-    Prints all matching messages as YouTube links.
+    Prints the first matching message from each satisfactory time window as YouTube links.
+
+    Parameters:
+        db_path (str): Path to the SQLite database.
+        regex_pattern (str): Regex pattern to search for in messages.
+        window_size (int): Time window size in seconds for grouping messages.
+        min_matches (int): Minimum number of matches required within a time window.
     """
     import re
+    from collections import defaultdict
 
     # Compile the regex pattern
     pattern = re.compile(regex_pattern)
@@ -194,8 +201,8 @@ def search_messages_in_database(db_path, regex_pattern):
         for row in rows
     ]
 
-    # Filter messages matching the regex pattern
-    matching_messages = [
+    # Filter rows matching the regex pattern
+    matching_rows = [
         (
             video_offset_time_msec // 1000 if video_offset_time_msec else timestamp_seconds,
             video_id,
@@ -205,8 +212,21 @@ def search_messages_in_database(db_path, regex_pattern):
         if pattern.search(message)
     ]
 
+    # Group messages by video_id and time window
+    grouped = defaultdict(list)
+    for timestamp_seconds, video_id, message in matching_rows:
+        time_window = timestamp_seconds // window_size
+        grouped[(video_id, time_window)].append((timestamp_seconds, message))
+
+    # Filter groups with at least the required number of matches and select the first message
+    results = []
+    for (video_id, time_window), messages in grouped.items():
+        if len(messages) >= min_matches:
+            first_message = min(messages, key=lambda x: x[0])  # Find the earliest message in the window
+            results.append((video_id, first_message[0], first_message[1]))
+
     # Print matching messages as YouTube links
-    for timestamp_seconds, video_id, message in matching_messages:
+    for video_id, timestamp_seconds, message in results:
         link = f"https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}s"
         print(link)
 
