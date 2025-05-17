@@ -43,7 +43,7 @@ def parse_offset(ts):
 def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     """
     Parses a YouTube live chat JSONL file and inserts messages into a SQLite database.
-    Messages are stored in tables named `live_chat_YYYY_MM` based on the release timestamp of the corresponding video.
+    Messages are stored in a single table named `live_chat`.
     Ensures duplicates are not inserted when re-processing a file.
     """
     # Extract video ID from the JSON filename
@@ -54,21 +54,13 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     conn.text_factory = str  # Ensure support for international characters
     cursor = conn.cursor()
 
-    # Fetch the release timestamp from the video metadata table
-    cursor.execute(
-        "SELECT release_timestamp FROM video_metadata WHERE video_id = ?", (video_id,)
-    )
-    result = cursor.fetchone()
-    if not result:
-        print(f"Error: Release timestamp not found for video ID {video_id}.")
-        conn.close()
-        return
-
-    release_timestamp = result[0]
-    release_date = pd.to_datetime(release_timestamp).strftime("%Y_%m")
-    table_name = f"live_chat_{release_date}"
+    # Set SQLite pragmas for performance and reliability
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+    cursor.execute("PRAGMA journal_size_limit=10485760;")  # 10 MB
 
     # Create the table if it doesn't exist
+    table_name = "live_chat"
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -79,10 +71,15 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
             author_channel_id TEXT,
             message TEXT,
             is_moderator BOOLEAN,
-            is_channel_owner BOOLEAN
+            is_channel_owner BOOLEAN,
+            video_offset_time_msec INTEGER,
+            video_offset_time_text TEXT
         )
-    """
+        """
     )
+
+    # Begin a transaction for batch writes
+    conn.execute("BEGIN TRANSACTION;")
 
     with open(json_path, "r", encoding="utf-8") as infile:
         for line in infile:
@@ -123,12 +120,18 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
                             elif icon_type == "OWNER":
                                 is_channel_owner = True
 
-                        # Insert the message into the database, escaping strings to prevent SQL injection
+                        # Extract videoOffsetTimeMsec for each chat message
+                        video_offset_time_msec = obj.get("replayChatItemAction", {}).get("videoOffsetTimeMsec", None)
+
+                        # Extract videoOffsetText for each chat message
+                        video_offset_time_text = renderer.get("timestampText", {}).get("simpleText", "")
+
+                        # Insert the message into the database, including video_offset_time_msec and video_offset_time_text
                         cursor.execute(
                             f"""
-                            INSERT OR IGNORE INTO {table_name} (timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
+                            INSERT OR IGNORE INTO {table_name} (timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
                             (
                                 timestamp_usec,
                                 timestamp_iso,
@@ -138,37 +141,16 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
                                 msg,
                                 is_moderator,
                                 is_channel_owner,
+                                video_offset_time_msec,
+                                video_offset_time_text,
                             ),
                         )
             except Exception as e:
                 continue
 
-    # Commit changes and close the connection
+    # Commit the transaction
     conn.commit()
     conn.close()
-
-
-def parse_live_chat_jsons_to_sqlite(directory_path, db_path="chat_messages.db"):
-    """
-    Parses all YouTube live chat JSONL files in a directory tree and inserts messages into a SQLite database.
-    Each video will have its own table named after its video ID.
-    Ensures duplicates are not inserted when re-processing files.
-    """
-    # Ensure the directory exists
-    if not os.path.exists(directory_path):
-        print(f"Error: Directory '{directory_path}' does not exist.")
-        return
-
-    # Escape the directory path for glob
-    escaped_path = glob.escape(directory_path)
-
-    # Find all .live_chat.json files in the directory tree
-    json_files = glob.glob(f"{escaped_path}/**/*.live_chat.json", recursive=True)
-
-    for json_file in json_files:
-        parse_live_chat_json_to_sqlite(json_file, db_path)
-
-    print(f"Processed {len(json_files)} files into the SQLite database: {db_path}")
 
 
 def extract_video_id_from_filename(filename):
@@ -181,41 +163,10 @@ def extract_video_id_from_filename(filename):
     return match.group(1)
 
 
-def output_top10_links(csv_path):
-    """
-    Identifies the top 10 busiest 1-minute intervals in a CSV file and generates YouTube timestamp links.
-    """
-    # Get video ID from filename
-    base = os.path.basename(csv_path)
-    try:
-        video_id = extract_video_id_from_filename(base)
-    except ValueError as e:
-        print(f"Error extracting video ID: {e}")
-        return
-
-    # Load CSV and compute per-minute message counts
-    df = pd.read_csv(csv_path)
-
-    # Convert timestamp_text to signed seconds offset
-    df["offset"] = df["timestamp_text"].apply(parse_offset)
-    df["minute"] = df["offset"] // 60
-    message_counts = df.groupby("minute").size()
-
-    # Get top 10 minute intervals
-    top10_by_count = message_counts.sort_values(ascending=False).head(10)
-
-    # Generate YouTube timestamp links
-    for minute, count in top10_by_count.items():
-        timestamp = f"{minute // 60}:{minute % 60:02d}"
-        link = f"https://www.youtube.com/watch?v={video_id}&t={minute * 60}s"
-        print(f"{timestamp} ({count} messages): {link}")
-
-
-def search_messages_in_database(db_path, regex_pattern, min_matches=5, window_size=30):
+def search_messages_in_database(db_path, regex_pattern):
     """
     Searches all videos in the SQLite database for messages matching a specific regex pattern.
-    Requires more than `min_matches` matches within a `window_size`-second window and uses the timestamp of the first message.
-    Avoids multiple matches in overlapping ranges.
+    Prints all matching messages as YouTube links.
     """
     import re
 
@@ -227,57 +178,36 @@ def search_messages_in_database(db_path, regex_pattern, min_matches=5, window_si
     conn.text_factory = str  # Ensure support for international characters
     cursor = conn.cursor()
 
-    # Get all table names (video IDs)
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
+    # Query messages from the 'live_chat' table
+    cursor.execute("SELECT timestamp_text, video_id, author, message FROM live_chat;")
+    rows = cursor.fetchall()
 
-    for table in tables:
-        table_name = table[0]
-        video_id = table_name.replace("video_", "")
+    # Convert rows to a list of (timestamp_seconds, video_id, author, message)
+    parsed_rows = [(parse_offset(row[0]), row[1], row[2], row[3]) for row in rows]
 
-        # Query messages from the current table
-        cursor.execute(f"SELECT timestamp_text, author, message FROM {table_name};")
-        rows = cursor.fetchall()
+    # Filter messages matching the regex pattern
+    matching_messages = [
+        (timestamp_seconds, video_id, author, message)
+        for timestamp_seconds, video_id, author, message in parsed_rows
+        if pattern.search(message)
+    ]
 
-        # Convert rows to a list of (timestamp_seconds, author, message)
-        parsed_rows = [(parse_offset(row[0]), row[1], row[2]) for row in rows]
-        parsed_rows.sort(key=lambda x: x[0])  # Sort by timestamp_seconds
-
-        # Sliding window to find matches within `window_size` seconds
-        window = []
-        last_match_end = -1  # Track the end of the last matched window
-
-        for timestamp_seconds, author, message in parsed_rows:
-            if pattern.search(message):
-                window.append((timestamp_seconds, author, message))
-
-                # Remove messages outside the `window_size`-second window
-                while window and window[0][0] < timestamp_seconds - window_size:
-                    window.pop(0)
-
-                # Check if there are more than `min_matches` matches in the window
-                if len(window) > min_matches and (
-                    last_match_end == -1 or window[0][0] > last_match_end
-                ):
-                    start_timestamp = window[0][0]
-                    link = f"https://www.youtube.com/watch?v={video_id}&t={start_timestamp-10}s"
-                    print(
-                        f"Video ID: {video_id}, Start Timestamp: {start_timestamp}, Link: {link}"
-                    )
-                    last_match_end = (
-                        start_timestamp + window_size
-                    )  # Update the end of the matched window
-                    window.clear()  # Clear the window to avoid duplicate results
+    # Print matching messages as YouTube links
+    for timestamp_seconds, video_id, author, message in matching_messages:
+        link = f"https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}s"
+        print(link)
 
     # Close the database connection
     conn.close()
 
 
-def parse_info_jsons_to_sqlite(directory_path, db_path="chat_messages.db"):
+def parse_jsons_to_sqlite(
+    directory_path, db_path="chat_messages.db", json_type="live_chat"
+):
     """
-    Parses all YouTube video info JSON files in a directory tree and inserts metadata into a SQLite database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp.
-    Stores release_timestamp in the format YYYY-MM-DD HH:MM:SS.SSSZ using the `timestamp` field.
+    Parses all YouTube JSON files (live chat or info) in a directory tree and inserts data into a SQLite database.
+    For live chat JSONs, messages are stored in a single table named `live_chat`.
+    For info JSONs, metadata is stored in a table named `video_metadata`.
     """
     # Ensure the directory exists
     if not os.path.exists(directory_path):
@@ -287,13 +217,43 @@ def parse_info_jsons_to_sqlite(directory_path, db_path="chat_messages.db"):
     # Escape the directory path for glob
     escaped_path = glob.escape(directory_path)
 
-    # Find all .info.json files in the directory tree
-    info_files = glob.glob(f"{escaped_path}/**/*.info.json", recursive=True)
+    # Determine file pattern and processing logic based on json_type
+    if json_type == "live_chat":
+        file_pattern = "**/*.live_chat.json"
+        process_function = parse_live_chat_json_to_sqlite
+    elif json_type == "info":
+        file_pattern = "**/*.info.json"
+        process_function = parse_info_json_to_sqlite
+    else:
+        print(f"Error: Unsupported JSON type '{json_type}'.")
+        return
 
+    # Find all matching JSON files in the directory tree
+    json_files = glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)
+
+    for json_file in json_files:
+        process_function(json_file, db_path)
+
+    print(
+        f"Processed {len(json_files)} {json_type} files into the SQLite database: {db_path}"
+    )
+
+
+def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
+    """
+    Parses a YouTube video info JSON file and inserts metadata into a SQLite database.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp.
+    Stores release_timestamp in the format YYYY-MM-DD HH:MM:SS.SSSZ using the `timestamp` field.
+    """
     # Connect to SQLite database
     conn = sqlite3.connect(db_path)
     conn.text_factory = str  # Ensure support for international characters
     cursor = conn.cursor()
+
+    # Set SQLite pragmas for performance and reliability
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+    cursor.execute("PRAGMA journal_size_limit=10485760;")  # Set journal size limit to 10 MB
 
     # Create the video_metadata table if it doesn't exist
     cursor.execute(
@@ -305,50 +265,47 @@ def parse_info_jsons_to_sqlite(directory_path, db_path="chat_messages.db"):
             channel_name TEXT,
             release_timestamp TEXT
         )
-    """
+        """
     )
 
-    for info_file in info_files:
-        try:
-            with open(info_file, "r", encoding="utf-8") as infile:
-                data = json.load(infile)
+    try:
+        with open(json_path, "r", encoding="utf-8") as infile:
+            data = json.load(infile)
 
-                # Extract required fields
-                video_id = data.get("id", "")
-                title = data.get("title", "")
-                channel_id = data.get("channel_id", "")
-                channel_name = data.get("channel", "")
-                timestamp = data.get("timestamp", None)
+            # Extract required fields
+            video_id = data.get("id", "")
+            title = data.get("title", "")
+            channel_id = data.get("channel_id", "")
+            channel_name = data.get("channel", "")
+            timestamp = data.get("timestamp", None)
 
-                # Convert timestamp to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
-                release_timestamp = ""
-                if timestamp:
-                    release_timestamp = f"{pd.to_datetime(timestamp, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
+            # Convert timestamp to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
+            release_timestamp = ""
+            if timestamp:
+                release_timestamp = f"{pd.to_datetime(timestamp, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
 
-                # Insert metadata into the database
-                cursor.execute(
-                    """
-                    INSERT OR IGNORE INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp)
-                    VALUES (?, ?, ?, ?, ?)
+            # Insert metadata into the database
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                    (video_id, title, channel_id, channel_name, release_timestamp),
-                )
-        except Exception as e:
-            print(f"Error processing file {info_file}: {e}")
+                (video_id, title, channel_id, channel_name, release_timestamp),
+            )
+    except Exception as e:
+        print(f"Error processing file {json_path}: {e}")
 
     # Commit changes and close the connection
     conn.commit()
     conn.close()
 
-    print(f"Processed {len(info_files)} files into the SQLite database: {db_path}")
-
 
 def main():
     directory_path = r"/home/localuser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
-    db_path = parse_live_chat_jsons_to_sqlite(directory_path)
-    # search_messages_in_database("chat_messages.db", r"(?i)bless you", min_matches=5, window_size=120)
-    db_path="chat_messages.db"
-    parse_info_jsons_to_sqlite(directory_path, db_path)
+    db_path = "chat_messages.db"
+    parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
+    parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
+    # search_messages_in_database(db_path, r"(?i)bless you")
 
 
 if __name__ == "__main__":
