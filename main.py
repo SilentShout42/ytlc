@@ -214,6 +214,77 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
         print(f"{link} - {result['message']}")
 
 
+def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min_matches=5):
+    """
+    Searches the database and prints results as a markdown table with columns:
+    - Video Date (YYYY-mm-dd)
+    - Video Title (as a YouTube link)
+    - Timestamp Link (HH:MM:SS)
+    - Message Text
+    """
+    import re
+
+    # Read messages and metadata from the database into a pandas DataFrame
+    query = """
+        SELECT
+            lc.timestamp_usec,
+            lc.video_id,
+            lc.video_offset_time_msec,
+            lc.message,
+            vm.release_timestamp,
+            vm.title
+        FROM live_chat lc
+        JOIN video_metadata vm ON lc.video_id = vm.video_id;
+    """
+    df = pd.read_sql_query(query, sqlite3.connect(db_path))
+
+    # Ensure video_offset_time_msec is an integer
+    df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
+
+    # Convert timestamp_usec to datetime for easier processing
+    df["timestamp"] = pd.to_datetime(df["timestamp_usec"], unit="us")
+
+    # Filter rows matching the regex pattern
+    pattern = re.compile(regex_pattern)
+    df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
+    matching_df = df[df["matches"]]
+
+    # Group by video_id and time window
+    matching_df["time_window"] = matching_df["timestamp"].dt.floor(f"{window_size}s")
+    grouped = matching_df.groupby(["video_id", "time_window"])
+
+    # Filter groups with at least the required number of matches
+    results = []
+    for (video_id, time_window), group in grouped:
+        if len(group) >= min_matches:
+            first_message = group.iloc[0]
+            results.append(
+                {
+                    "video_id": video_id,
+                    "video_date": pd.to_datetime(first_message["release_timestamp"]).strftime("%Y-%m-%d"),
+                    "video_title": first_message["title"],
+                    "video_offset_time_seconds": first_message["video_offset_time_msec"] // 1000,
+                    "timestamp_usec": first_message["timestamp_usec"],
+                    "message": first_message["message"],
+                }
+            )
+
+    # Sort results by timestamp_usec (oldest to newest)
+    results = sorted(results, key=lambda x: x["timestamp_usec"])
+
+    # Print results as a markdown table
+    print("| Video Date | Video Title | Timestamp Link | Message Text |")
+    print("|------------|-------------|----------------|--------------|")
+    for result in results:
+        video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
+        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - 10, 0)
+        timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
+        timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime("%H:%M:%S")
+        print(
+            f"| {result['video_date']} | [**{result['video_title']}**]({video_link}) | [**{timestamp_hms}**]({timestamp_link}) | {result['message']} |"
+        )
+
+
 def parse_jsons_to_sqlite(
     directory_path, db_path="chat_messages.db", json_type="live_chat"
 ):
@@ -322,7 +393,8 @@ def main():
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
-    search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
+    # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
+    print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
 
 
 if __name__ == "__main__":
