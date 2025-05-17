@@ -3,31 +3,33 @@ import csv
 import os
 import pandas as pd
 
+def parse_offset(ts):
+    """
+    Converts a timestamp string (e.g., "1:23:45" or "-0:42") to signed seconds offset.
+    """
+    sign = -1 if str(ts).startswith('-') else 1
+    ts_clean = str(ts).lstrip('+-')
+    parts = ts_clean.split(':')
+    parts = [int(p) for p in parts]
+    if len(parts) == 3:
+        h, m, s = parts
+    elif len(parts) == 2:
+        h = 0
+        m, s = parts
+    elif len(parts) == 1:
+        h = 0
+        m = 0
+        s = parts[0]
+    else:
+        return 0
+    total = sign * (h * 3600 + m * 60 + s)
+    return total
+
 def csv_to_histogram(csv_path):
     # Load your data
     df = pd.read_csv(csv_path)
 
-    # Convert timestamp_text (e.g. "1:23:45" or "-0:42") to signed seconds offset
-    def parse_offset(ts):
-        sign = -1 if str(ts).startswith('-') else 1
-        ts_clean = str(ts).lstrip('+-')
-        parts = ts_clean.split(':')
-        # Support H:MM:SS or M:SS or S
-        parts = [int(p) for p in parts]
-        if len(parts) == 3:
-            h, m, s = parts
-        elif len(parts) == 2:
-            h = 0
-            m, s = parts
-        elif len(parts) == 1:
-            h = 0
-            m = 0
-            s = parts[0]
-        else:
-            return 0
-        total = sign * (h * 3600 + m * 60 + s)
-        return total
-
+    # Convert timestamp_text to signed seconds offset
     df['offset'] = df['timestamp_text'].apply(parse_offset)
 
     # Set offset as index
@@ -44,7 +46,7 @@ def csv_to_histogram(csv_path):
 def parse_live_chat_json_to_csv(json_path):
     """
     Parses a YouTube live chat JSONL file and writes messages to a CSV.
-    CSV columns: timestamp_usec, timestamp_text, author, message, is_moderator
+    CSV columns: timestamp_usec, timestamp_text, author, message, is_moderator, is_channel_owner
     """
     # Replace .live_chat.json with .csv in the same directory
     if json_path.endswith(".live_chat.json"):
@@ -52,11 +54,9 @@ def parse_live_chat_json_to_csv(json_path):
     else:
         csv_path = json_path + ".csv"
 
-    with open(json_path, "r", encoding="utf-8") as infile, \
-         open(csv_path, "w", encoding="utf-8", newline="") as outfile:
-        writer = csv.writer(outfile)
-        writer.writerow(["timestamp_usec", "timestamp_text", "author", "message", "is_moderator"])
+    rows = []
 
+    with open(json_path, "r", encoding="utf-8") as infile:
         for line in infile:
             try:
                 obj = json.loads(line)
@@ -79,13 +79,25 @@ def parse_live_chat_json_to_csv(json_path):
                         author = renderer.get("authorName", {}).get("simpleText", "")
                         # Check for moderator badge
                         is_moderator = False
+                        is_channel_owner = False
                         for badge in renderer.get("authorBadges", []):
                             badge_renderer = badge.get("liveChatAuthorBadgeRenderer", {})
-                            if badge_renderer.get("icon", {}).get("iconType", "") == "MODERATOR":
+                            icon_type = badge_renderer.get("icon", {}).get("iconType", "")
+                            if icon_type == "MODERATOR":
                                 is_moderator = True
-                        writer.writerow([timestamp_usec, timestamp_text, author, msg, is_moderator])
+                            elif icon_type == "OWNER":
+                                is_channel_owner = True
+                        rows.append([timestamp_usec, timestamp_text, author, msg, is_moderator, is_channel_owner])
             except Exception as e:
                 continue
+
+    # Sort rows by timestamp_usec before writing to CSV
+    rows.sort(key=lambda x: int(x[0]))
+
+    with open(csv_path, "w", encoding="utf-8", newline="") as outfile:
+        writer = csv.writer(outfile)
+        writer.writerow(["timestamp_usec", "timestamp_text", "author", "message", "is_moderator", "is_channel_owner"])
+        writer.writerows(rows)
 
     return csv_path
 
@@ -111,25 +123,7 @@ def output_top10_links(csv_path):
     # Load CSV and compute per-minute message counts
     df = pd.read_csv(csv_path)
 
-    def parse_offset(ts):
-        sign = -1 if str(ts).startswith('-') else 1
-        ts_clean = str(ts).lstrip('+-')
-        parts = ts_clean.split(':')
-        parts = [int(p) for p in parts]
-        if len(parts) == 3:
-            h, m, s = parts
-        elif len(parts) == 2:
-            h = 0
-            m, s = parts
-        elif len(parts) == 1:
-            h = 0
-            m = 0
-            s = parts[0]
-        else:
-            return 0
-        total = sign * (h * 3600 + m * 60 + s)
-        return total
-
+    # Convert timestamp_text to signed seconds offset
     df['offset'] = df['timestamp_text'].apply(parse_offset)
     df['minute'] = (df['offset'] // 60)
     message_counts = df.groupby('minute').size()
