@@ -6,6 +6,7 @@ import sqlite3
 import glob
 import re
 from collections import defaultdict
+import msgspec
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -70,9 +71,10 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     conn.execute("BEGIN TRANSACTION;")
 
     with open(json_path, "r", encoding="utf-8") as infile:
+        decoder = msgspec.json.Decoder()
         for line in infile:
             try:
-                obj = json.loads(line)
+                obj = decoder.decode(line)
                 actions = obj.get("replayChatItemAction", {}).get("actions", [])
                 for action in actions:
                     item = action.get("addChatItemAction", {}).get("item", {})
@@ -109,10 +111,14 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
                                 is_channel_owner = True
 
                         # Extract videoOffsetTimeMsec for each chat message
-                        video_offset_time_msec = obj.get("replayChatItemAction", {}).get("videoOffsetTimeMsec", None)
+                        video_offset_time_msec = obj.get(
+                            "replayChatItemAction", {}
+                        ).get("videoOffsetTimeMsec", None)
 
                         # Extract videoOffsetText for each chat message
-                        video_offset_time_text = renderer.get("timestampText", {}).get("simpleText", "")
+                        video_offset_time_text = renderer.get("timestampText", {}).get(
+                            "simpleText", ""
+                        )
 
                         # Insert the message into the database, including video_offset_time_msec and video_offset_time_text
                         cursor.execute(
@@ -169,35 +175,38 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
     df = pd.read_sql_query(query, sqlite3.connect(db_path))
 
     # Ensure video_offset_time_msec is an integer
-    df['video_offset_time_msec'] = df['video_offset_time_msec'].fillna(0).astype(int)
+    df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
 
     # Convert timestamp_usec to datetime for easier processing
-    df['timestamp'] = pd.to_datetime(df['timestamp_usec'], unit='us')
+    df["timestamp"] = pd.to_datetime(df["timestamp_usec"], unit="us")
 
     # Filter rows matching the regex pattern
     pattern = re.compile(regex_pattern)
-    df['matches'] = df['message'].apply(lambda x: bool(pattern.search(x)))
-    matching_df = df[df['matches']]
+    df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
+    matching_df = df[df["matches"]]
 
     # Group by video_id and time window
-    matching_df['time_window'] = matching_df['timestamp'].dt.floor(f'{window_size}s')
-    grouped = matching_df.groupby(['video_id', 'time_window'])
+    matching_df["time_window"] = matching_df["timestamp"].dt.floor(f"{window_size}s")
+    grouped = matching_df.groupby(["video_id", "time_window"])
 
     # Filter groups with at least the required number of matches
     results = []
     for (video_id, time_window), group in grouped:
         if len(group) >= min_matches:
             first_message = group.iloc[0]
-            results.append({
-                'video_id': video_id,
-                'time_window': time_window,
-                'message': first_message['message'],
-                'video_offset_time_seconds': first_message['video_offset_time_msec'] // 1000,
-                'timestamp_usec': first_message['timestamp_usec']
-            })
+            results.append(
+                {
+                    "video_id": video_id,
+                    "time_window": time_window,
+                    "message": first_message["message"],
+                    "video_offset_time_seconds": first_message["video_offset_time_msec"]
+                    // 1000,
+                    "timestamp_usec": first_message["timestamp_usec"],
+                }
+            )
 
     # Sort results by timestamp_usec (oldest to newest)
-    results = sorted(results, key=lambda x: x['timestamp_usec'])
+    results = sorted(results, key=lambda x: x["timestamp_usec"])
 
     # Print matching messages as YouTube links along with the message text
     for result in results:
@@ -257,7 +266,9 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
     # Set SQLite pragmas for performance and reliability
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute("PRAGMA journal_size_limit=10485760;")  # Set journal size limit to 10 MB
+    cursor.execute(
+        "PRAGMA journal_size_limit=10485760;"
+    )  # Set journal size limit to 10 MB
 
     # Create the video_metadata table if it doesn't exist
     cursor.execute(
@@ -274,7 +285,8 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
 
     try:
         with open(json_path, "r", encoding="utf-8") as infile:
-            data = json.load(infile)
+            decoder = msgspec.json.Decoder()
+            data = decoder.decode(infile.read())
 
             # Extract required fields
             video_id = data.get("id", "")
@@ -310,7 +322,7 @@ def main():
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
-    search_messages_in_database(db_path, r"(?i)bless you")
+    search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
 
 
 if __name__ == "__main__":
