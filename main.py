@@ -157,70 +157,18 @@ def extract_video_id_from_filename(filename):
     return match.group(1)
 
 
-def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matches=5):
+def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
     """
-    Searches all videos in the SQLite database for messages matching a specific regex pattern.
-    Prints the first matching message from each satisfactory time window as YouTube links.
+    Searches the database for messages matching a regex pattern and groups them by video ID and time window.
 
     Parameters:
         db_path (str): Path to the SQLite database.
         regex_pattern (str): Regex pattern to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
-    """
-    import re
 
-    # Read messages from the database into a pandas DataFrame
-    query = "SELECT timestamp_usec, video_id, video_offset_time_msec, message FROM live_chat;"
-    df = pd.read_sql_query(query, sqlite3.connect(db_path))
-
-    # Ensure video_offset_time_msec is an integer
-    df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
-
-    # Convert timestamp_usec to datetime for easier processing
-    df["timestamp"] = pd.to_datetime(df["timestamp_usec"], unit="us")
-
-    # Filter rows matching the regex pattern
-    pattern = re.compile(regex_pattern)
-    df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
-    matching_df = df[df["matches"]]
-
-    # Group by video_id and time window
-    matching_df["time_window"] = matching_df["timestamp"].dt.floor(f"{window_size}s")
-    grouped = matching_df.groupby(["video_id", "time_window"])
-
-    # Filter groups with at least the required number of matches
-    results = []
-    for (video_id, time_window), group in grouped:
-        if len(group) >= min_matches:
-            first_message = group.iloc[0]
-            results.append(
-                {
-                    "video_id": video_id,
-                    "time_window": time_window,
-                    "message": first_message["message"],
-                    "video_offset_time_seconds": first_message["video_offset_time_msec"]
-                    // 1000,
-                    "timestamp_usec": first_message["timestamp_usec"],
-                }
-            )
-
-    # Sort results by timestamp_usec (oldest to newest)
-    results = sorted(results, key=lambda x: x["timestamp_usec"])
-
-    # Print matching messages as YouTube links along with the message text
-    for result in results:
-        link = f"https://www.youtube.com/watch?v={result['video_id']}&t={result['video_offset_time_seconds']}s"
-        print(f"{link} - {result['message']}")
-
-
-def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min_matches=5):
-    """
-    Searches the database and prints results as a markdown table with columns:
-    - Video Date (YYYY-mm-dd)
-    - Video Title (as a YouTube link)
-    - Timestamp Link (HH:MM:SS)
-    - Message Text
+    Returns:
+        list: A list of dictionaries containing grouped search results.
     """
     import re
 
@@ -270,7 +218,18 @@ def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min
             )
 
     # Sort results by timestamp_usec (oldest to newest)
-    results = sorted(results, key=lambda x: x["timestamp_usec"])
+    return sorted(results, key=lambda x: x["timestamp_usec"])
+
+
+def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min_matches=5):
+    """
+    Searches the database and prints results as a markdown table with columns:
+    - Video Date (YYYY-mm-dd)
+    - Video Title (as a YouTube link)
+    - Timestamp Link (HH:MM:SS)
+    - Message Text
+    """
+    results = search_messages(db_path, regex_pattern, window_size, min_matches)
 
     # Print results as a markdown table
     print("| Video Date | Video Title | Timestamp Link | Message Text |")
@@ -283,6 +242,125 @@ def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min
         print(
             f"| {result['video_date']} | [**{result['video_title']}**]({video_link}) | [**{timestamp_hms}**]({timestamp_link}) | {result['message']} |"
         )
+
+
+def generate_sortable_html_table(db_path, regex_pattern, window_size=60, min_matches=5, output_file="results.html"):
+    """
+    Searches the database and generates a sortable HTML table with columns:
+    - Video Date (YYYY-mm-dd)
+    - Video Title (as a YouTube link)
+    - Timestamp Link (HH:MM:SS)
+    - Message Text
+    The table is saved to an HTML file for publishing.
+    """
+    results = search_messages(db_path, regex_pattern, window_size, min_matches)
+
+    # Generate HTML table
+    html = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Search Results</title>
+        <style>
+            table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            th, td {
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+            }
+            th {
+                cursor: pointer;
+                background-color: #f2f2f2;
+            }
+            tr:nth-child(even) {
+                background-color: #f9f9f9;
+            }
+            tr:hover {
+                background-color: #f1f1f1;
+            }
+        </style>
+        <script>
+            function sortTable(n) {
+                const table = document.getElementById("resultsTable");
+                let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+                switching = true;
+                dir = "asc";
+                while (switching) {
+                    switching = false;
+                    rows = table.rows;
+                    for (i = 1; i < (rows.length - 1); i++) {
+                        shouldSwitch = false;
+                        x = rows[i].getElementsByTagName("TD")[n];
+                        y = rows[i + 1].getElementsByTagName("TD")[n];
+                        if (dir === "asc") {
+                            if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {
+                                shouldSwitch = true;
+                                break;
+                            }
+                        } else if (dir === "desc") {
+                            if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {
+                                shouldSwitch = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldSwitch) {
+                        rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                        switching = true;
+                        switchcount++;
+                    } else {
+                        if (switchcount === 0 && dir === "asc") {
+                            dir = "desc";
+                            switching = true;
+                        }
+                    }
+                }
+            }
+        </script>
+    </head>
+    <body>
+        <h1>Search Results</h1>
+        <table id="resultsTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable(0)">Video Date</th>
+                    <th onclick="sortTable(1)">Video Title</th>
+                    <th onclick="sortTable(2)">Timestamp Link</th>
+                    <th onclick="sortTable(3)">Message Text</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+
+    for result in results:
+        video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
+        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - 10, 0)
+        timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
+        timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime("%H:%M:%S")
+        html += f"<tr>"
+        html += f"<td>{result['video_date']}</td>"
+        html += f"<td><a href='{video_link}' target='_blank'>{result['video_title']}</a></td>"
+        html += f"<td><a href='{timestamp_link}' target='_blank'>{timestamp_hms}</a></td>"
+        html += f"<td>{result['message']}</td>"
+        html += f"</tr>"
+
+    html += """
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+
+    # Save HTML to file
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"Results saved to {output_file}")
 
 
 def parse_jsons_to_sqlite(
@@ -394,7 +472,8 @@ def main():
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
-    print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
+    # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
+    generate_sortable_html_table(db_path, r"(?i)bless you(?! [^!:k])")
 
 
 if __name__ == "__main__":
