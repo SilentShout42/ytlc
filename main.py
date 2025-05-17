@@ -161,62 +161,45 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
     """
     import re
 
-    # Compile the regex pattern
-    pattern = re.compile(regex_pattern)
+    # Read messages from the database into a pandas DataFrame
+    query = "SELECT timestamp_usec, video_id, video_offset_time_msec, message FROM live_chat;"
+    df = pd.read_sql_query(query, sqlite3.connect(db_path))
 
-    # Connect to the SQLite database
-    conn = sqlite3.connect(db_path)
-    conn.text_factory = str  # Ensure support for international characters
-    cursor = conn.cursor()
+    # Ensure video_offset_time_msec is an integer
+    df['video_offset_time_msec'] = df['video_offset_time_msec'].fillna(0).astype(int)
 
-    # Query messages from the 'live_chat' table
-    cursor.execute("SELECT timestamp_usec, video_id, video_offset_time_msec, message FROM live_chat;")
-    rows = cursor.fetchall()
-
-    # Convert rows to a list of LiveChatMessage instances
-    parsed_rows = [
-        LiveChatMessage(
-            row[0] // 1000000,  # Use timestamp_usec for ordering (wall clock time)
-            row[1],
-            (row[2] // 1000) if row[2] is not None else 0,  # Use video_offset_time_msec for YouTube link timestamp
-            row[3]
-        )
-        for row in rows
-    ]
-
-    # Sort rows by wall clock time (timestamp_usec)
-    parsed_rows.sort(key=lambda x: x.timestamp_usec)
+    # Convert timestamp_usec to datetime for easier processing
+    df['timestamp'] = pd.to_datetime(df['timestamp_usec'], unit='us')
 
     # Filter rows matching the regex pattern
-    matching_rows = [
-        message
-        for message in parsed_rows
-        if pattern.search(message.message)
-    ]
+    pattern = re.compile(regex_pattern)
+    df['matches'] = df['message'].apply(lambda x: bool(pattern.search(x)))
+    matching_df = df[df['matches']]
 
-    # Group messages by video_id and time window
-    grouped = defaultdict(list)
-    for message in matching_rows:
-        time_window = message.timestamp_usec // (60 * 1000000)  # Group by 60-second windows
-        grouped[(message.video_id, time_window)].append(message)
+    # Group by video_id and time window
+    matching_df['time_window'] = matching_df['timestamp'].dt.floor(f'{window_size}s')
+    grouped = matching_df.groupby(['video_id', 'time_window'])
 
-    # Filter groups with at least the required number of matches and select the first message
+    # Filter groups with at least the required number of matches
     results = []
-    for (video_id, time_window), messages in grouped.items():
-        if len(messages) >= 5:
-            first_message = min(messages, key=lambda x: x.timestamp_usec)  # Find the earliest message in the window
-            results.append(first_message)
+    for (video_id, time_window), group in grouped:
+        if len(group) >= min_matches:
+            first_message = group.iloc[0]
+            results.append({
+                'video_id': video_id,
+                'time_window': time_window,
+                'message': first_message['message'],
+                'video_offset_time_seconds': first_message['video_offset_time_msec'] // 1000,
+                'timestamp_usec': first_message['timestamp_usec']
+            })
 
-    # Sort results by wall clock time (timestamp_usec)
-    results.sort(key=lambda x: x.timestamp_usec)
+    # Sort results by timestamp_usec (oldest to newest)
+    results = sorted(results, key=lambda x: x['timestamp_usec'])
 
     # Print matching messages as YouTube links along with the message text
-    for message in results:
-        link = f"https://www.youtube.com/watch?v={message.video_id}&t={message.video_offset_time_seconds}s"
-        print(f"{link} - {message.message}")
-
-    # Close the database connection
-    conn.close()
+    for result in results:
+        link = f"https://www.youtube.com/watch?v={result['video_id']}&t={result['video_offset_time_seconds']}s"
+        print(f"{link} - {result['message']}")
 
 
 def parse_jsons_to_sqlite(
