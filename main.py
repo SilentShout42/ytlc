@@ -7,6 +7,9 @@ import glob
 import re
 from collections import defaultdict
 
+# Enable pandas copy-on-write mode for memory optimization
+pd.options.mode.copy_on_write = True
+
 
 class LiveChatMessage:
     def __init__(self, timestamp_usec, video_id, video_offset_time_seconds, message):
@@ -306,7 +309,8 @@ def main():
     db_path = "chat_messages.db"
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
-    search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
+    # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
+    search_messages_in_database(db_path, r"(?i)bless you")
 
 
 if __name__ == "__main__":
