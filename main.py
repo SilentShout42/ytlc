@@ -221,13 +221,20 @@ def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
     return sorted(results, key=lambda x: x["timestamp_usec"])
 
 
-def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min_matches=5):
+def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min_matches=5, timestamp_offset=10):
     """
     Searches the database and prints results as a markdown table with columns:
     - Video Date (YYYY-mm-dd)
     - Video Title (as a YouTube link)
     - Timestamp Link (HH:MM:SS)
     - Message Text
+
+    Parameters:
+        db_path (str): Path to the SQLite database.
+        regex_pattern (str): Regex pattern to search for in messages.
+        window_size (int): Time window size in seconds for grouping messages.
+        min_matches (int): Minimum number of matches required within a time window.
+        timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
     """
     results = search_messages(db_path, regex_pattern, window_size, min_matches)
 
@@ -236,7 +243,7 @@ def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min
     print("|------------|-------------|----------------|--------------|")
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
-        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - 10, 0)
+        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - timestamp_offset, 0)
         timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime("%H:%M:%S")
         print(
@@ -244,7 +251,7 @@ def print_search_results_as_markdown(db_path, regex_pattern, window_size=60, min
         )
 
 
-def generate_sortable_html_table(db_path, regex_pattern, window_size=60, min_matches=5, output_file="results.html"):
+def generate_sortable_html_table(db_path, regex_pattern, window_size=60, min_matches=5, output_file="results.html", timestamp_offset=10):
     """
     Searches the database and generates a sortable HTML table with columns:
     - Video Date (YYYY-mm-dd)
@@ -252,6 +259,14 @@ def generate_sortable_html_table(db_path, regex_pattern, window_size=60, min_mat
     - Timestamp Link (HH:MM:SS)
     - Message Text
     The table is saved to an HTML file for publishing.
+
+    Parameters:
+        db_path (str): Path to the SQLite database.
+        regex_pattern (str): Regex pattern to search for in messages.
+        window_size (int): Time window size in seconds for grouping messages.
+        min_matches (int): Minimum number of matches required within a time window.
+        output_file (str): Path to save the generated HTML file.
+        timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
     """
     results = search_messages(db_path, regex_pattern, window_size, min_matches)
 
@@ -339,7 +354,7 @@ def generate_sortable_html_table(db_path, regex_pattern, window_size=60, min_mat
 
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
-        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - 10, 0)
+        timestamp_adjusted_seconds = max(result['video_offset_time_seconds'] - timestamp_offset, 0)
         timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime("%H:%M:%S")
         html += f"<tr>"
@@ -473,7 +488,8 @@ def main():
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
     # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
-    generate_sortable_html_table(db_path, r"(?i)bless you(?! [^!:k])")
+    # generate_sortable_html_table(db_path, r"(?i)bless you(?! [^!:k])", window_size=120)
+    generate_sortable_html_table(db_path, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
 
 if __name__ == "__main__":

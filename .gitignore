@@ -10,3 +10,4 @@ wheels/
 .venv
 samples
 *.db
+*.db*
