@@ -7,37 +7,21 @@ import glob
 import re
 
 
-def parse_offset(ts):
-    """
-    Converts a timestamp string (e.g., "1:23:45" or "-0:42") to signed seconds offset.
-    Returns 0 if the input is invalid.
-    """
-    if not ts or not isinstance(ts, str):
-        return 0
+class LiveChatMessage:
+    def __init__(self, timestamp_usec, video_id, video_offset_time_seconds, message):
+        self.timestamp_usec = timestamp_usec
+        self.video_id = video_id
+        self.video_offset_time_seconds = video_offset_time_seconds
+        self.message = message
 
-    sign = -1 if ts.startswith("-") else 1
-    ts_clean = ts.lstrip("+-")
-    parts = ts_clean.split(":")
 
-    try:
-        parts = [int(p) for p in parts]
-    except ValueError:
-        return 0
-
-    if len(parts) == 3:
-        h, m, s = parts
-    elif len(parts) == 2:
-        h = 0
-        m, s = parts
-    elif len(parts) == 1:
-        h = 0
-        m = 0
-        s = parts[0]
-    else:
-        return 0
-
-    total = sign * (h * 3600 + m * 60 + s)
-    return total
+class VideoMetadata:
+    def __init__(self, video_id, title, channel_id, channel_name, release_timestamp):
+        self.video_id = video_id
+        self.title = title
+        self.channel_id = channel_id
+        self.channel_name = channel_name
+        self.release_timestamp = release_timestamp
 
 
 def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
@@ -175,7 +159,6 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
         min_matches (int): Minimum number of matches required within a time window.
     """
     import re
-    from collections import defaultdict
 
     # Compile the regex pattern
     pattern = re.compile(regex_pattern)
@@ -185,49 +168,34 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
     conn.text_factory = str  # Ensure support for international characters
     cursor = conn.cursor()
 
-    # Query messages from the 'live_chat' table, excluding the author column
-    cursor.execute("SELECT timestamp_text, video_id, message, video_offset_time_msec, video_offset_time_text FROM live_chat;")
+    # Query messages from the 'live_chat' table
+    cursor.execute("SELECT timestamp_usec, video_id, video_offset_time_msec, message FROM live_chat;")
     rows = cursor.fetchall()
 
-    # Convert rows to a list of (timestamp_seconds, video_id, message, video_offset_time_msec, video_offset_time_text)
+    # Convert rows to a list of LiveChatMessage instances
     parsed_rows = [
-        (
-            parse_offset(row[0]),
+        LiveChatMessage(
+            row[0] // 1000000,  # Use timestamp_usec for ordering (wall clock time)
             row[1],
-            row[2],
-            row[3],
-            row[4]
+            (row[2] // 1000) if row[2] is not None else 0,  # Use video_offset_time_msec for YouTube link timestamp
+            row[3]
         )
         for row in rows
     ]
 
+    # Sort rows by wall clock time (timestamp_usec)
+    parsed_rows.sort(key=lambda x: x.timestamp_usec)
+
     # Filter rows matching the regex pattern
     matching_rows = [
-        (
-            video_offset_time_msec // 1000 if video_offset_time_msec else timestamp_seconds,
-            video_id,
-            message
-        )
-        for timestamp_seconds, video_id, message, video_offset_time_msec, _ in parsed_rows
-        if pattern.search(message)
+        message
+        for message in parsed_rows
+        if pattern.search(message.message)
     ]
 
-    # Group messages by video_id and time window
-    grouped = defaultdict(list)
-    for timestamp_seconds, video_id, message in matching_rows:
-        time_window = timestamp_seconds // window_size
-        grouped[(video_id, time_window)].append((timestamp_seconds, message))
-
-    # Filter groups with at least the required number of matches and select the first message
-    results = []
-    for (video_id, time_window), messages in grouped.items():
-        if len(messages) >= min_matches:
-            first_message = min(messages, key=lambda x: x[0])  # Find the earliest message in the window
-            results.append((video_id, first_message[0], first_message[1]))
-
     # Print matching messages as YouTube links
-    for video_id, timestamp_seconds, message in results:
-        link = f"https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}s"
+    for message in matching_rows:
+        link = f"https://www.youtube.com/watch?v={message.video_id}&t={message.video_offset_time_seconds}s"
         print(link)
 
     # Close the database connection
