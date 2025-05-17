@@ -5,6 +5,7 @@ import pandas as pd
 import sqlite3
 import glob
 import re
+from collections import defaultdict
 
 
 class LiveChatMessage:
@@ -193,10 +194,26 @@ def search_messages_in_database(db_path, regex_pattern, window_size=60, min_matc
         if pattern.search(message.message)
     ]
 
-    # Print matching messages as YouTube links
+    # Group messages by video_id and time window
+    grouped = defaultdict(list)
     for message in matching_rows:
+        time_window = message.timestamp_usec // (60 * 1000000)  # Group by 60-second windows
+        grouped[(message.video_id, time_window)].append(message)
+
+    # Filter groups with at least the required number of matches and select the first message
+    results = []
+    for (video_id, time_window), messages in grouped.items():
+        if len(messages) >= 5:
+            first_message = min(messages, key=lambda x: x.timestamp_usec)  # Find the earliest message in the window
+            results.append(first_message)
+
+    # Sort results by wall clock time (timestamp_usec)
+    results.sort(key=lambda x: x.timestamp_usec)
+
+    # Print matching messages as YouTube links along with the message text
+    for message in results:
         link = f"https://www.youtube.com/watch?v={message.video_id}&t={message.video_offset_time_seconds}s"
-        print(link)
+        print(f"{link} - {message.message}")
 
     # Close the database connection
     conn.close()
@@ -306,7 +323,7 @@ def main():
     db_path = "chat_messages.db"
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
     # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
-    search_messages_in_database(db_path, r"(?i)bless you")
+    search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
 
 
 if __name__ == "__main__":
