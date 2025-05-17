@@ -178,22 +178,35 @@ def search_messages_in_database(db_path, regex_pattern):
     conn.text_factory = str  # Ensure support for international characters
     cursor = conn.cursor()
 
-    # Query messages from the 'live_chat' table
-    cursor.execute("SELECT timestamp_text, video_id, author, message FROM live_chat;")
+    # Query messages from the 'live_chat' table, excluding the author column
+    cursor.execute("SELECT timestamp_text, video_id, message, video_offset_time_msec, video_offset_time_text FROM live_chat;")
     rows = cursor.fetchall()
 
-    # Convert rows to a list of (timestamp_seconds, video_id, author, message)
-    parsed_rows = [(parse_offset(row[0]), row[1], row[2], row[3]) for row in rows]
+    # Convert rows to a list of (timestamp_seconds, video_id, message, video_offset_time_msec, video_offset_time_text)
+    parsed_rows = [
+        (
+            parse_offset(row[0]),
+            row[1],
+            row[2],
+            row[3],
+            row[4]
+        )
+        for row in rows
+    ]
 
     # Filter messages matching the regex pattern
     matching_messages = [
-        (timestamp_seconds, video_id, author, message)
-        for timestamp_seconds, video_id, author, message in parsed_rows
+        (
+            video_offset_time_msec // 1000 if video_offset_time_msec else timestamp_seconds,
+            video_id,
+            message
+        )
+        for timestamp_seconds, video_id, message, video_offset_time_msec, _ in parsed_rows
         if pattern.search(message)
     ]
 
     # Print matching messages as YouTube links
-    for timestamp_seconds, video_id, author, message in matching_messages:
+    for timestamp_seconds, video_id, message in matching_messages:
         link = f"https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}s"
         print(link)
 
@@ -303,9 +316,9 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
 def main():
     directory_path = r"/home/localuser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
     db_path = "chat_messages.db"
-    parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
-    parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
-    # search_messages_in_database(db_path, r"(?i)bless you")
+    # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
+    # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
+    search_messages_in_database(db_path, r"(?i)bless you")
 
 
 if __name__ == "__main__":
