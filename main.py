@@ -6,7 +6,10 @@ import sqlite3
 import glob
 import re
 from collections import defaultdict
-import msgspec
+import orjson
+import psycopg2
+from psycopg2.extras import execute_values
+import time
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -29,14 +32,80 @@ class VideoMetadata:
         self.release_timestamp = release_timestamp
 
 
+def parse_live_chat_json(json_path):
+    """
+    Parses a YouTube live chat JSONL file and extracts messages.
+
+    Returns:
+        list: A list of dictionaries containing parsed message data.
+    """
+    messages = []
+    video_id = extract_video_id_from_filename(json_path)
+
+    with open(json_path, "r", encoding="utf-8") as infile:
+        for line in infile:
+            try:
+                obj = orjson.loads(line)
+                actions = obj.get("replayChatItemAction", {}).get("actions", [])
+                for action in actions:
+                    item = action.get("addChatItemAction", {}).get("item", {})
+                    renderer = item.get("liveChatTextMessageRenderer")
+                    if renderer:
+                        # Extract message text (concatenate all runs)
+                        runs = renderer.get("message", {}).get("runs", [])
+                        msg = ""
+                        for run in runs:
+                            if "text" in run:
+                                msg += run["text"]
+                            elif "emoji" in run:
+                                label = run["emoji"].get("shortcuts", [""])[0]
+                                msg += label
+                        timestamp_usec = int(renderer.get("timestampUsec", "0"))
+                        timestamp_iso = f"{pd.to_datetime(timestamp_usec, unit='us').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
+                        author = renderer.get("authorName", {}).get("simpleText", "")
+                        author_channel_id = renderer.get("authorExternalChannelId", "")
+                        message_id = renderer.get("id", "")
+
+                        # Check for moderator and channel owner badges
+                        is_moderator = False
+                        is_channel_owner = False
+                        for badge in renderer.get("authorBadges", []):
+                            badge_renderer = badge.get("liveChatAuthorBadgeRenderer", {})
+                            icon_type = badge_renderer.get("icon", {}).get("iconType", "")
+                            if icon_type == "MODERATOR":
+                                is_moderator = True
+                            elif icon_type == "OWNER":
+                                is_channel_owner = True
+
+                        video_offset_time_msec = obj.get("replayChatItemAction", {}).get("videoOffsetTimeMsec", None)
+                        video_offset_time_text = renderer.get("timestampText", {}).get("simpleText", "")
+
+                        messages.append({
+                            "message_id": message_id,
+                            "timestamp_usec": timestamp_usec,
+                            "timestamp_iso": timestamp_iso,
+                            "video_id": video_id,
+                            "author": author,
+                            "author_channel_id": author_channel_id,
+                            "message": msg,
+                            "is_moderator": is_moderator,
+                            "is_channel_owner": is_channel_owner,
+                            "video_offset_time_msec": video_offset_time_msec,
+                            "video_offset_time_text": video_offset_time_text,
+                        })
+            except Exception as e:
+                pass  # Placeholder to fix indentation
+
+    return messages
+
+
 def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     """
     Parses a YouTube live chat JSONL file and inserts messages into a SQLite database.
     Messages are stored in a single table named `live_chat`.
     Ensures duplicates are not inserted when re-processing a file.
     """
-    # Extract video ID from the JSON filename
-    video_id = extract_video_id_from_filename(json_path)
+    messages = parse_live_chat_json(json_path)
 
     # Connect to SQLite database
     conn = sqlite3.connect(db_path)
@@ -53,7 +122,8 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            timestamp_usec INTEGER PRIMARY KEY,
+            message_id TEXT PRIMARY KEY,
+            timestamp_usec INTEGER,
             timestamp_text TEXT,
             video_id TEXT,
             author TEXT,
@@ -70,81 +140,105 @@ def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
     # Begin a transaction for batch writes
     conn.execute("BEGIN TRANSACTION;")
 
-    with open(json_path, "r", encoding="utf-8") as infile:
-        decoder = msgspec.json.Decoder()
-        for line in infile:
-            try:
-                obj = decoder.decode(line)
-                actions = obj.get("replayChatItemAction", {}).get("actions", [])
-                for action in actions:
-                    item = action.get("addChatItemAction", {}).get("item", {})
-                    renderer = item.get("liveChatTextMessageRenderer")
-                    if renderer:
-                        # Extract message text (concatenate all runs)
-                        runs = renderer.get("message", {}).get("runs", [])
-                        msg = ""
-                        for run in runs:
-                            if "text" in run:
-                                msg += run["text"]
-                            elif "emoji" in run:
-                                label = run["emoji"].get("shortcuts", [""])[0]
-                                msg += label
-                        timestamp_usec = int(renderer.get("timestampUsec", "0"))
-                        # Convert timestamp_usec to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
-                        timestamp_iso = f"{pd.to_datetime(timestamp_usec, unit='us').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
-                        author = renderer.get("authorName", {}).get("simpleText", "")
-                        author_channel_id = renderer.get("authorExternalChannelId", "")
-
-                        # Check for moderator and channel owner badges
-                        is_moderator = False
-                        is_channel_owner = False
-                        for badge in renderer.get("authorBadges", []):
-                            badge_renderer = badge.get(
-                                "liveChatAuthorBadgeRenderer", {}
-                            )
-                            icon_type = badge_renderer.get("icon", {}).get(
-                                "iconType", ""
-                            )
-                            if icon_type == "MODERATOR":
-                                is_moderator = True
-                            elif icon_type == "OWNER":
-                                is_channel_owner = True
-
-                        # Extract videoOffsetTimeMsec for each chat message
-                        video_offset_time_msec = obj.get(
-                            "replayChatItemAction", {}
-                        ).get("videoOffsetTimeMsec", None)
-
-                        # Extract videoOffsetText for each chat message
-                        video_offset_time_text = renderer.get("timestampText", {}).get(
-                            "simpleText", ""
-                        )
-
-                        # Insert the message into the database, including video_offset_time_msec and video_offset_time_text
-                        cursor.execute(
-                            f"""
-                            INSERT OR IGNORE INTO {table_name} (timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                timestamp_usec,
-                                timestamp_iso,
-                                video_id,
-                                author,
-                                author_channel_id,
-                                msg,
-                                is_moderator,
-                                is_channel_owner,
-                                video_offset_time_msec,
-                                video_offset_time_text,
-                            ),
-                        )
-            except Exception as e:
-                continue
+    for message in messages:
+        cursor.execute(
+            f"""
+            INSERT OR IGNORE INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message["message_id"],
+                message["timestamp_usec"],
+                message["timestamp_iso"],
+                message["video_id"],
+                message["author"],
+                message["author_channel_id"],
+                message["message"],
+                message["is_moderator"],
+                message["is_channel_owner"],
+                message["video_offset_time_msec"],
+                message["video_offset_time_text"],
+            ),
+        )
 
     # Commit the transaction
     conn.commit()
     conn.close()
+
+
+def parse_live_chat_json_to_postgres(json_path, db_config):
+    """
+    Parses a YouTube live chat JSONL file and inserts messages into a PostgreSQL database.
+    Messages are stored in a single table named `live_chat`.
+    Ensures duplicates are not inserted when re-processing a file.
+    """
+    start_time = time.time()
+    messages = parse_live_chat_json(json_path)
+    parsing_time = time.time() - start_time
+
+    # Print the number of lines parsed and parsing time
+    print(f"Parsed {len(messages)} lines from {os.path.basename(json_path)} in {parsing_time:.2f} seconds.")
+
+    # Connect to PostgreSQL database
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+
+    # Create the table if it doesn't exist
+    table_name = "live_chat"
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            message_id TEXT PRIMARY KEY,
+            timestamp_usec BIGINT,
+            timestamp_text TIMESTAMP,
+            video_id TEXT,
+            author TEXT,
+            author_channel_id TEXT,
+            message TEXT,
+            is_moderator BOOLEAN,
+            is_channel_owner BOOLEAN,
+            video_offset_time_msec BIGINT,
+            video_offset_time_text TEXT
+        )
+        """
+    )
+
+    # Use batch inserts for better performance
+    batch_size = 1000
+    insertion_start_time = time.time()
+    for i in range(0, len(messages), batch_size):
+        batch = messages[i:i + batch_size]
+        execute_values(
+            cursor,
+            f"""
+            INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+            VALUES %s ON CONFLICT (message_id) DO NOTHING
+            """,
+            [
+                (
+                    message["message_id"],
+                    message["timestamp_usec"],
+                    pd.to_datetime(message["timestamp_usec"], unit="us", utc=True),
+                    message["video_id"],
+                    message["author"],
+                    message["author_channel_id"],
+                    message["message"],
+                    message["is_moderator"],
+                    message["is_channel_owner"],
+                    message["video_offset_time_msec"],
+                    message["video_offset_time_text"],
+                )
+                for message in batch
+            ],
+        )
+
+    # Commit the transaction
+    conn.commit()
+    conn.close()
+
+    # Print the time taken for insertion
+    insertion_time = time.time() - insertion_start_time
+    print(f"Inserted {len(messages)} lines into PostgreSQL from {os.path.basename(json_path)} in {insertion_time:.2f} seconds.")
 
 
 def extract_video_id_from_filename(filename):
@@ -416,6 +510,44 @@ def parse_jsons_to_sqlite(
     )
 
 
+def parse_jsons_to_postgres(
+    directory_path, db_config, json_type="live_chat"
+):
+    """
+    Parses all YouTube JSON files (live chat or info) in a directory tree and inserts data into a PostgreSQL database.
+    For live chat JSONs, messages are stored in a single table named `live_chat`.
+    For info JSONs, metadata is stored in a table named `video_metadata`.
+    """
+    # Ensure the directory exists
+    if not os.path.exists(directory_path):
+        print(f"Error: Directory '{directory_path}' does not exist.")
+        return
+
+    # Escape the directory path for glob
+    escaped_path = glob.escape(directory_path)
+
+    # Determine file pattern and processing logic based on json_type
+    if json_type == "live_chat":
+        file_pattern = "**/*.live_chat.json"
+        process_function = parse_live_chat_json_to_postgres
+    elif json_type == "info":
+        file_pattern = "**/*.info.json"
+        process_function = parse_info_json_to_postgres
+    else:
+        print(f"Error: Unsupported JSON type '{json_type}'.")
+        return
+
+    # Find all matching JSON files in the directory tree
+    json_files = glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)
+
+    for json_file in json_files:
+        process_function(json_file, db_config)
+
+    print(
+        f"Processed {len(json_files)} {json_type} files into the PostgreSQL database."
+    )
+
+
 def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
     """
     Parses a YouTube video info JSON file and inserts metadata into a SQLite database.
@@ -449,9 +581,7 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
 
     try:
         with open(json_path, "r", encoding="utf-8") as infile:
-            decoder = msgspec.json.Decoder()
-            data = decoder.decode(infile.read())
-
+            data = orjson.loads(infile.read())
             # Extract required fields
             video_id = data.get("id", "")
             title = data.get("title", "")
@@ -480,11 +610,70 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
     conn.close()
 
 
+def parse_info_json_to_postgres(json_path, db_config):
+    """
+    Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp.
+    """
+    # Connect to PostgreSQL database
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+
+    # Create the video_metadata table if it doesn't exist
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_metadata (
+            video_id TEXT PRIMARY KEY,
+            title TEXT,
+            channel_id TEXT,
+            channel_name TEXT,
+            release_timestamp TIMESTAMP
+        )
+        """
+    )
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as infile:
+            data = orjson.loads(infile.read())
+            # Extract required fields
+            video_id = data.get("id", "")
+            title = data.get("title", "")
+            channel_id = data.get("channel_id", "")
+            channel_name = data.get("channel", "")
+            timestamp = data.get("timestamp", None)
+
+            # Convert timestamp to native PostgreSQL TIMESTAMP format in UTC
+            release_timestamp = None
+            if timestamp:
+                release_timestamp = pd.to_datetime(timestamp, unit="s", utc=True)
+
+            # Insert metadata into the database
+            cursor.execute(
+                """
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (video_id) DO NOTHING
+                """,
+                (video_id, title, channel_id, channel_name, release_timestamp),
+            )
+    except Exception as e:
+        print(f"Error processing file {json_path}: {e}")
+
+    # Commit changes and close the connection
+    conn.commit()
+    conn.close()
+
+
 def main():
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025"
-    db_path = "chat_messages.db"
-    parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
-    parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
+    db_config = {
+        "dbname": "ytlc",
+        "user": "ytlc",
+        "host": "localhost",
+        "port": 5432,
+    }
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
+    parse_jsons_to_postgres(directory_path, db_config, json_type="info")
+    parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
     # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
