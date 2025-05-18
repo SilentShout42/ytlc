@@ -130,7 +130,35 @@ def parse_live_chat_json_buffered(json_path, buffer_size=10000):
                 obj = orjson.loads(line)
                 actions = obj.get("replayChatItemAction", {}).get("actions", [])
                 for action in actions:
+                    # or "addLiveChatTickerItemAction"
                     item = action.get("addChatItemAction", {}).get("item", {})
+                    # or "liveChatTickerPaidMessageItemRenderer"
+                    # "amountTextColor",
+                    # "animationOrigin",
+                    # "authorExternalChannelId",
+                    # "authorPhoto",
+                    # "authorUsername",
+                    # "durationSec",
+                    # "endBackgroundColor",
+                    # "fullDurationSec",
+                    # "id",
+                    # "openEngagementPanelCommand",
+                    # "showItemEndpoint",
+                    # "startBackgroundColor",
+                    # "trackingParams"
+                    #
+                    # or "liveChatTickerSponsorItemRenderer"
+                    # "authorExternalChannelId",
+                    # "detailText",
+                    # "detailTextColor",
+                    # "durationSec",
+                    # "endBackgroundColor",
+                    # "fullDurationSec",
+                    # "id",
+                    # "showItemEndpoint",
+                    # "sponsorPhoto",
+                    # "startBackgroundColor",
+                    # "trackingParams"
                     renderer = item.get("liveChatTextMessageRenderer")
                     if renderer:
                         # Extract message text (concatenate all runs)
