@@ -33,6 +33,26 @@ class VideoMetadata:
         self.release_timestamp = release_timestamp
 
 
+def parse_message_runs(runs):
+    """
+    Parses runs of text and emojis into a single message string.
+
+    Parameters:
+        runs (list): List of runs containing text and/or emojis.
+
+    Returns:
+        str: Concatenated message string.
+    """
+    msg = ""
+    for run in runs:
+        if "text" in run:
+            msg += run["text"]
+        elif "emoji" in run:
+            label = run["emoji"].get("shortcuts", [""])[0]
+            msg += label
+    return msg
+
+
 def parse_live_chat_json(json_path):
     """
     Parses a YouTube live chat JSONL file and extracts messages.
@@ -54,13 +74,7 @@ def parse_live_chat_json(json_path):
                     if renderer:
                         # Extract message text (concatenate all runs)
                         runs = renderer.get("message", {}).get("runs", [])
-                        msg = ""
-                        for run in runs:
-                            if "text" in run:
-                                msg += run["text"]
-                            elif "emoji" in run:
-                                label = run["emoji"].get("shortcuts", [""])[0]
-                                msg += label
+                        msg = parse_message_runs(runs)
                         timestamp_usec = int(renderer.get("timestampUsec", "0"))
                         timestamp_iso = f"{pd.to_datetime(timestamp_usec, unit='us').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
                         author = renderer.get("authorName", {}).get("simpleText", "")
@@ -130,42 +144,12 @@ def parse_live_chat_json_buffered(json_path, buffer_size=10000):
                 obj = orjson.loads(line)
                 actions = obj.get("replayChatItemAction", {}).get("actions", [])
                 for action in actions:
-                    # or "addLiveChatTickerItemAction"
                     item = action.get("addChatItemAction", {}).get("item", {})
-                    # or "liveChatTickerPaidMessageItemRenderer"
-                    # "amountTextColor",
-                    # "animationOrigin",
-                    # "authorExternalChannelId",
-                    # "authorPhoto",
-                    # "authorUsername",
-                    # "durationSec",
-                    # "endBackgroundColor",
-                    # "fullDurationSec",
-                    # "id",
-                    # "openEngagementPanelCommand",
-                    # "showItemEndpoint",
-                    # "startBackgroundColor",
-                    # "trackingParams"
-                    #
-                    # or "liveChatTickerSponsorItemRenderer"
-                    # "authorExternalChannelId",
-                    # "detailText",
-                    # "detailTextColor",
-                    # "durationSec",
-                    # "endBackgroundColor",
-                    # "fullDurationSec",
-                    # "id",
-                    # "showItemEndpoint",
-                    # "sponsorPhoto",
-                    # "startBackgroundColor",
-                    # "trackingParams"
                     renderer = item.get("liveChatTextMessageRenderer")
                     if renderer:
                         # Extract message text (concatenate all runs)
                         runs = renderer.get("message", {}).get("runs", [])
-                        msg = "".join(
-                            run.get("text", "") for run in runs if "text" in run
-                        )
+                        msg = parse_message_runs(runs)
                         timestamp_usec = int(renderer.get("timestampUsec", "0"))
                         author = renderer.get("authorName", {}).get("simpleText", "")
                         author_channel_id = renderer.get("authorExternalChannelId", "")
@@ -427,9 +411,7 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                     if renderer:
                         # Extract message text (concatenate all runs)
                         runs = renderer.get("message", {}).get("runs", [])
-                        msg = "".join(
-                            run.get("text", "") for run in runs if "text" in run
-                        )
+                        msg = parse_message_runs(runs)
                         timestamp_usec = int(renderer.get("timestampUsec", "0"))
                         author = renderer.get("authorName", {}).get("simpleText", "")
                         author_channel_id = renderer.get("authorExternalChannelId", "")
