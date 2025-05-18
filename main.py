@@ -481,15 +481,15 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
 
 
 def main():
-    directory_path = r"/home/localuser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025"
     db_path = "chat_messages.db"
-    # parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
-    # parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
+    parse_jsons_to_sqlite(directory_path, db_path, json_type="info")
+    parse_jsons_to_sqlite(directory_path, db_path, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
     # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
     # generate_sortable_html_table(db_path, r"(?i)bless you(?! [^!:k])", window_size=120)
-    generate_sortable_html_table(db_path, r"(?i)tskr", window_size=120, timestamp_offset=15)
+    # generate_sortable_html_table(db_path, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
 
 if __name__ == "__main__":
