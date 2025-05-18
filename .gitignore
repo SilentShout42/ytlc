@@ -11,3 +11,4 @@ wheels/
 samples
 *.db
 *.db*
+*.csv
