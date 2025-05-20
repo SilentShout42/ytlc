@@ -1032,9 +1032,9 @@ def main():
         "host": "localhost",
         "port": 5432,
     }
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025/05"
     parse_jsons_to_postgres(directory_path, db_config, json_type="info")
-    parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
+    # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
     # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
