@@ -9,7 +9,7 @@ user_name="ytlc"
 generated_password=$(openssl rand -base64 16)
 
 # Output the commands instead of running them
-cat <<EOF
+cat <<EOF | sudo -u postgres psql -v ON_ERROR_STOP=1
 DO
 \$$
 BEGIN
@@ -34,6 +34,17 @@ BEGIN
 END
 \$$;
 EOF
+
+
+# Check if the .pgpass file exists, create it if not
+if [ ! -f ~/.pgpass ]; then
+    touch ~/.pgpass
+fi
+
+# Make the password update in ~/.pgpass idempotent
+sed -i.bak "/^localhost:5432:$db_name:$user_name:/d" ~/.pgpass
+echo "localhost:5432:$db_name:$user_name:$generated_password" >> ~/.pgpass
+chmod 600 ~/.pgpass
 
 # Output the generated password to stderr
 echo "Generated password for user '$user_name': $generated_password" >&2

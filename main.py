@@ -304,7 +304,18 @@ def insert_messages_to_postgres(messages, db_config):
         cursor,
         f"""
         INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-        VALUES %s ON CONFLICT (message_id) DO NOTHING
+        VALUES %s
+        ON CONFLICT (message_id) DO UPDATE SET
+            timestamp_usec = EXCLUDED.timestamp_usec,
+            timestamp_text = EXCLUDED.timestamp_text,
+            video_id = EXCLUDED.video_id,
+            author = EXCLUDED.author,
+            author_channel_id = EXCLUDED.author_channel_id,
+            message = EXCLUDED.message,
+            is_moderator = EXCLUDED.is_moderator,
+            is_channel_owner = EXCLUDED.is_channel_owner,
+            video_offset_time_msec = EXCLUDED.video_offset_time_msec,
+            video_offset_time_text = EXCLUDED.video_offset_time_text
         """,
         [
             (
@@ -362,7 +373,18 @@ async def async_insert_messages_to_postgres(messages, db_config):
         cursor,
         f"""
         INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-        VALUES %s ON CONFLICT (message_id) DO NOTHING
+        VALUES %s
+        ON CONFLICT (message_id) DO UPDATE SET
+            timestamp_usec = EXCLUDED.timestamp_usec,
+            timestamp_text = EXCLUDED.timestamp_text,
+            video_id = EXCLUDED.video_id,
+            author = EXCLUDED.author,
+            author_channel_id = EXCLUDED.author_channel_id,
+            message = EXCLUDED.message,
+            is_moderator = EXCLUDED.is_moderator,
+            is_channel_owner = EXCLUDED.is_channel_owner,
+            video_offset_time_msec = EXCLUDED.video_offset_time_msec,
+            video_offset_time_text = EXCLUDED.video_offset_time_text
         """,
         [
             (
@@ -832,42 +854,170 @@ def generate_sortable_html_table(
     print(f"Results saved to {output_file}")
 
 
-def parse_jsons_to_sqlite(
-    directory_path, db_path="chat_messages.db", json_type="live_chat"
-):
+def parse_duration(duration_string):
     """
-    Parses all YouTube JSON files (live chat or info) in a directory tree and inserts data into a SQLite database.
-    For live chat JSONs, messages are stored in a single table named `live_chat`.
-    For info JSONs, metadata is stored in a table named `video_metadata`.
+    Converts a duration string to seconds.
+
+    Parameters:
+        duration_string (str): The duration string in HH:MM:SS, MM:SS, or SS format.
+
+    Returns:
+        int or None: Duration in seconds, or None if the string is invalid.
     """
-    # Ensure the directory exists
-    if not os.path.exists(directory_path):
-        print(f"Error: Directory '{directory_path}' does not exist.")
-        return
+    if duration_string:
+        duration_parts = list(map(int, duration_string.split(":")))
+        if len(duration_parts) == 3:
+            return duration_parts[0] * 3600 + duration_parts[1] * 60 + duration_parts[2]
+        elif len(duration_parts) == 2:
+            return duration_parts[0] * 60 + duration_parts[1]
+        elif len(duration_parts) == 1:
+            return duration_parts[0]
+    return None
 
-    # Escape the directory path for glob
-    escaped_path = glob.escape(directory_path)
 
-    # Determine file pattern and processing logic based on json_type
-    if json_type == "live_chat":
-        file_pattern = "**/*.live_chat.json"
-        process_function = parse_live_chat_json_to_sqlite
-    elif json_type == "info":
-        file_pattern = "**/*.info.json"
-        process_function = parse_info_json_to_sqlite
-    else:
-        print(f"Error: Unsupported JSON type '{json_type}'.")
-        return
+def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
+    """
+    Parses a YouTube video info JSON file and inserts metadata into a SQLite database.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds.
+    Stores release_timestamp in the format YYYY-MM-DD HH:MM:SS.SSSZ using the `timestamp` field.
+    """
+    # Connect to SQLite database
+    conn = sqlite3.connect(db_path)
+    conn.text_factory = str  # Ensure support for international characters
+    cursor = conn.cursor()
 
-    # Find all matching JSON files in the directory tree
-    json_files = glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)
+    # Set SQLite pragmas for performance and reliability
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
+    cursor.execute(
+        "PRAGMA journal_size_limit=10485760;"
+    )  # Set journal size limit to 10 MB
 
-    for json_file in json_files:
-        process_function(json_file, db_path)
-
-    print(
-        f"Processed {len(json_files)} {json_type} files into the SQLite database: {db_path}"
+    # Create the video_metadata table if it doesn't exist
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_metadata (
+            video_id TEXT PRIMARY KEY,
+            title TEXT,
+            channel_id TEXT,
+            channel_name TEXT,
+            release_timestamp TEXT,
+            duration_seconds INTEGER
+        )
+        """
     )
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as infile:
+            data = orjson.loads(infile.read())
+            # Extract required fields
+            video_id = data.get("id", "")
+            title = data.get("title", "")
+            channel_id = data.get("channel_id", "")
+            channel_name = data.get("channel", "")
+            timestamp = data.get("timestamp", None)
+            duration = data.get("duration", None)
+            if not duration:
+                duration_string = data.get("duration_string", None)
+                duration = parse_duration(duration_string)
+
+            # Convert timestamp to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
+            release_timestamp = ""
+            if timestamp:
+                release_timestamp = f"{pd.to_datetime(timestamp, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
+
+            # Insert metadata into the database
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    video_id,
+                    title,
+                    channel_id,
+                    channel_name,
+                    release_timestamp,
+                    duration,
+                ),
+            )
+    except Exception as e:
+        print(f"Error processing file {json_path}: {e}")
+
+    # Commit changes and close the connection
+    conn.commit()
+    conn.close()
+
+
+def parse_info_json_to_postgres(json_path, db_config):
+    """
+    Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds.
+    """
+    # Connect to PostgreSQL database
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+
+    # Create the video_metadata table if it doesn't exist
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS video_metadata (
+            video_id TEXT PRIMARY KEY,
+            title TEXT,
+            channel_id TEXT,
+            channel_name TEXT,
+            release_timestamp TIMESTAMP,
+            duration_seconds INTEGER
+        )
+        """
+    )
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as infile:
+            data = orjson.loads(infile.read())
+            # Extract required fields
+            video_id = data.get("id", "")
+            title = data.get("title", "")
+            channel_id = data.get("channel_id", "")
+            channel_name = data.get("channel", "")
+            timestamp = data.get("timestamp", None)
+            duration = data.get("duration", None)
+            if not duration:
+                duration_string = data.get("duration_string", None)
+                duration = parse_duration(duration_string)
+
+            # Convert timestamp to native PostgreSQL TIMESTAMP format in UTC
+            release_timestamp = None
+            if timestamp:
+                release_timestamp = pd.to_datetime(timestamp, unit="s", utc=True)
+
+            # Insert metadata into the database
+            cursor.execute(
+                """
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (video_id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    channel_id = EXCLUDED.channel_id,
+                    channel_name = EXCLUDED.channel_name,
+                    release_timestamp = EXCLUDED.release_timestamp,
+                    duration_seconds = EXCLUDED.duration_seconds
+                """,
+                (
+                    video_id,
+                    title,
+                    channel_id,
+                    channel_name,
+                    release_timestamp,
+                    duration,
+                ),
+            )
+    except Exception as e:
+        print(f"Error processing file {json_path}: {e}")
+
+    # Commit changes and close the connection
+    conn.commit()
+    conn.close()
 
 
 def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
@@ -909,122 +1059,6 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
     )
 
 
-def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
-    """
-    Parses a YouTube video info JSON file and inserts metadata into a SQLite database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp.
-    Stores release_timestamp in the format YYYY-MM-DD HH:MM:SS.SSSZ using the `timestamp` field.
-    """
-    # Connect to SQLite database
-    conn = sqlite3.connect(db_path)
-    conn.text_factory = str  # Ensure support for international characters
-    cursor = conn.cursor()
-
-    # Set SQLite pragmas for performance and reliability
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute(
-        "PRAGMA journal_size_limit=10485760;"
-    )  # Set journal size limit to 10 MB
-
-    # Create the video_metadata table if it doesn't exist
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS video_metadata (
-            video_id TEXT PRIMARY KEY,
-            title TEXT,
-            channel_id TEXT,
-            channel_name TEXT,
-            release_timestamp TEXT
-        )
-        """
-    )
-
-    try:
-        with open(json_path, "r", encoding="utf-8") as infile:
-            data = orjson.loads(infile.read())
-            # Extract required fields
-            video_id = data.get("id", "")
-            title = data.get("title", "")
-            channel_id = data.get("channel_id", "")
-            channel_name = data.get("channel", "")
-            timestamp = data.get("timestamp", None)
-
-            # Convert timestamp to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
-            release_timestamp = ""
-            if timestamp:
-                release_timestamp = f"{pd.to_datetime(timestamp, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
-
-            # Insert metadata into the database
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (video_id, title, channel_id, channel_name, release_timestamp),
-            )
-    except Exception as e:
-        print(f"Error processing file {json_path}: {e}")
-
-    # Commit changes and close the connection
-    conn.commit()
-    conn.close()
-
-
-def parse_info_json_to_postgres(json_path, db_config):
-    """
-    Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp.
-    """
-    # Connect to PostgreSQL database
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
-
-    # Create the video_metadata table if it doesn't exist
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS video_metadata (
-            video_id TEXT PRIMARY KEY,
-            title TEXT,
-            channel_id TEXT,
-            channel_name TEXT,
-            release_timestamp TIMESTAMP
-        )
-        """
-    )
-
-    try:
-        with open(json_path, "r", encoding="utf-8") as infile:
-            data = orjson.loads(infile.read())
-            # Extract required fields
-            video_id = data.get("id", "")
-            title = data.get("title", "")
-            channel_id = data.get("channel_id", "")
-            channel_name = data.get("channel", "")
-            timestamp = data.get("timestamp", None)
-
-            # Convert timestamp to native PostgreSQL TIMESTAMP format in UTC
-            release_timestamp = None
-            if timestamp:
-                release_timestamp = pd.to_datetime(timestamp, unit="s", utc=True)
-
-            # Insert metadata into the database
-            cursor.execute(
-                """
-                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (video_id) DO NOTHING
-                """,
-                (video_id, title, channel_id, channel_name, release_timestamp),
-            )
-    except Exception as e:
-        print(f"Error processing file {json_path}: {e}")
-
-    # Commit changes and close the connection
-    conn.commit()
-    conn.close()
-
-
 def main():
     db_config = {
         "dbname": "ytlc",
@@ -1032,7 +1066,7 @@ def main():
         "host": "localhost",
         "port": 5432,
     }
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025/05"
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
     parse_jsons_to_postgres(directory_path, db_config, json_type="info")
     # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
