@@ -53,280 +53,6 @@ def parse_message_runs(runs):
     return msg
 
 
-def parse_live_chat_json(json_path):
-    """
-    Parses a YouTube live chat JSONL file and extracts messages.
-
-    Returns:
-        list: A list of dictionaries containing parsed message data.
-    """
-    messages = []
-    video_id = extract_video_id_from_filename(json_path)
-
-    with open(json_path, "r", encoding="utf-8") as infile:
-        for line in infile:
-            try:
-                obj = orjson.loads(line)
-                actions = obj.get("replayChatItemAction", {}).get("actions", [])
-                for action in actions:
-                    item = action.get("addChatItemAction", {}).get("item", {})
-                    renderer = item.get("liveChatTextMessageRenderer")
-                    if renderer:
-                        # Extract message text (concatenate all runs)
-                        runs = renderer.get("message", {}).get("runs", [])
-                        msg = parse_message_runs(runs)
-                        timestamp_usec = int(renderer.get("timestampUsec", "0"))
-                        timestamp_iso = f"{pd.to_datetime(timestamp_usec, unit='us').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
-                        author = renderer.get("authorName", {}).get("simpleText", "")
-                        author_channel_id = renderer.get("authorExternalChannelId", "")
-                        message_id = renderer.get("id", "")
-
-                        # Check for moderator and channel owner badges
-                        is_moderator = False
-                        is_channel_owner = False
-                        for badge in renderer.get("authorBadges", []):
-                            badge_renderer = badge.get(
-                                "liveChatAuthorBadgeRenderer", {}
-                            )
-                            icon_type = badge_renderer.get("icon", {}).get(
-                                "iconType", ""
-                            )
-                            if icon_type == "MODERATOR":
-                                is_moderator = True
-                            elif icon_type == "OWNER":
-                                is_channel_owner = True
-
-                        video_offset_time_msec = obj.get(
-                            "replayChatItemAction", {}
-                        ).get("videoOffsetTimeMsec", None)
-                        video_offset_time_text = renderer.get("timestampText", {}).get(
-                            "simpleText", ""
-                        )
-
-                        messages.append(
-                            {
-                                "message_id": message_id,
-                                "timestamp_usec": timestamp_usec,
-                                "timestamp_iso": timestamp_iso,
-                                "video_id": video_id,
-                                "author": author,
-                                "author_channel_id": author_channel_id,
-                                "message": msg,
-                                "is_moderator": is_moderator,
-                                "is_channel_owner": is_channel_owner,
-                                "video_offset_time_msec": video_offset_time_msec,
-                                "video_offset_time_text": video_offset_time_text,
-                            }
-                        )
-            except Exception as e:
-                pass  # Placeholder to fix indentation
-
-    return messages
-
-
-def parse_live_chat_json_buffered(json_path, buffer_size=10000):
-    """
-    Parses a YouTube live chat JSONL file and yields messages in buffered batches.
-
-    Parameters:
-        json_path (str): Path to the JSONL file.
-        buffer_size (int): Number of messages to buffer before yielding.
-
-    Yields:
-        list: A list of buffered messages.
-    """
-    buffer = []
-    video_id = extract_video_id_from_filename(json_path)
-
-    with open(json_path, "r", encoding="utf-8") as infile:
-        for line in infile:
-            try:
-                obj = orjson.loads(line)
-                actions = obj.get("replayChatItemAction", {}).get("actions", [])
-                for action in actions:
-                    item = action.get("addChatItemAction", {}).get("item", {})
-                    renderer = item.get("liveChatTextMessageRenderer")
-                    if renderer:
-                        # Extract message text (concatenate all runs)
-                        runs = renderer.get("message", {}).get("runs", [])
-                        msg = parse_message_runs(runs)
-                        timestamp_usec = int(renderer.get("timestampUsec", "0"))
-                        author = renderer.get("authorName", {}).get("simpleText", "")
-                        author_channel_id = renderer.get("authorExternalChannelId", "")
-                        message_id = renderer.get("id", "")
-
-                        # Check for moderator and channel owner badges
-                        is_moderator = any(
-                            badge.get("liveChatAuthorBadgeRenderer", {})
-                            .get("icon", {})
-                            .get("iconType", "")
-                            == "MODERATOR"
-                            for badge in renderer.get("authorBadges", [])
-                        )
-                        is_channel_owner = any(
-                            badge.get("liveChatAuthorBadgeRenderer", {})
-                            .get("icon", {})
-                            .get("iconType", "")
-                            == "OWNER"
-                            for badge in renderer.get("authorBadges", [])
-                        )
-
-                        video_offset_time_msec = obj.get("videoOffsetTimeMsec", None)
-                        video_offset_time_text = renderer.get("timestampText", {}).get(
-                            "simpleText", ""
-                        )
-
-                        buffer.append(
-                            {
-                                "message_id": message_id,
-                                "timestamp_usec": timestamp_usec,
-                                "video_id": video_id,
-                                "author": author,
-                                "author_channel_id": author_channel_id,
-                                "message": msg,
-                                "is_moderator": is_moderator,
-                                "is_channel_owner": is_channel_owner,
-                                "video_offset_time_msec": video_offset_time_msec,
-                                "video_offset_time_text": video_offset_time_text,
-                            }
-                        )
-
-                        if len(buffer) >= buffer_size:
-                            yield buffer
-                            buffer = []
-            except Exception:
-                pass  # Ignore errors for now
-
-    if buffer:
-        yield buffer
-
-
-def parse_live_chat_json_to_sqlite(json_path, db_path="chat_messages.db"):
-    """
-    Parses a YouTube live chat JSONL file and inserts messages into a SQLite database.
-    Messages are stored in a single table named `live_chat`.
-    Ensures duplicates are not inserted when re-processing a file.
-    """
-    messages = parse_live_chat_json(json_path)
-
-    # Connect to SQLite database
-    conn = sqlite3.connect(db_path)
-    conn.text_factory = str  # Ensure support for international characters
-    cursor = conn.cursor()
-
-    # Set SQLite pragmas for performance and reliability
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute("PRAGMA journal_size_limit=10485760;")  # 10 MB
-
-    # Create the table if it doesn't exist
-    table_name = "live_chat"
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            message_id TEXT PRIMARY KEY,
-            timestamp_usec INTEGER,
-            timestamp_text TEXT,
-            video_id TEXT,
-            author TEXT,
-            author_channel_id TEXT,
-            message TEXT,
-            is_moderator BOOLEAN,
-            is_channel_owner BOOLEAN,
-            video_offset_time_msec INTEGER,
-            video_offset_time_text TEXT
-        )
-        """
-    )
-
-    # Begin a transaction for batch writes
-    conn.execute("BEGIN TRANSACTION;")
-
-    for message in messages:
-        cursor.execute(
-            f"""
-            INSERT OR IGNORE INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                message["message_id"],
-                message["timestamp_usec"],
-                message["timestamp_iso"],
-                message["video_id"],
-                message["author"],
-                message["author_channel_id"],
-                message["message"],
-                message["is_moderator"],
-                message["is_channel_owner"],
-                message["video_offset_time_msec"],
-                message["video_offset_time_text"],
-            ),
-        )
-
-    # Commit the transaction
-    conn.commit()
-    conn.close()
-
-
-def insert_messages_to_postgres(messages, db_config):
-    """
-    Inserts a batch of messages into the PostgreSQL database.
-
-    Parameters:
-        messages (list): List of message dictionaries to insert.
-        db_config (dict): Database configuration for PostgreSQL connection.
-    """
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
-
-    table_name = "live_chat"
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            message_id TEXT PRIMARY KEY,
-            timestamp_usec BIGINT,
-            timestamp_text TIMESTAMP,
-            video_id TEXT,
-            author TEXT,
-            author_channel_id TEXT,
-            message TEXT,
-            is_moderator BOOLEAN,
-            is_channel_owner BOOLEAN,
-            video_offset_time_msec BIGINT,
-            video_offset_time_text TEXT
-        )
-        """
-    )
-
-    execute_values(
-        cursor,
-        f"""
-        INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-        VALUES %s
-        ON CONFLICT (message_id) DO NOTHING
-        """,
-        [
-            (
-                message["message_id"],
-                message["timestamp_usec"],
-                pd.to_datetime(message["timestamp_usec"], unit="us", utc=True),
-                message["video_id"],
-                message["author"],
-                message["author_channel_id"],
-                message["message"],
-                message["is_moderator"],
-                message["is_channel_owner"],
-                message["video_offset_time_msec"],
-                message["video_offset_time_text"],
-            )
-            for message in messages
-        ],
-    )
-
-    conn.commit()
-    conn.close()
-
-
 async def async_insert_messages_to_postgres(messages, db_config):
     """
     Asynchronously inserts a batch of messages into the PostgreSQL database.
@@ -433,7 +159,9 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                             for badge in renderer.get("authorBadges", [])
                         )
 
-                        video_offset_time_msec = obj.get("videoOffsetTimeMsec", None)
+                        video_offset_time_msec = obj.get(
+                            "replayChatItemAction", {}
+                        ).get("videoOffsetTimeMsec", None)
                         video_offset_time_text = renderer.get("timestampText", {}).get(
                             "simpleText", ""
                         )
@@ -619,14 +347,17 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     rows = cursor.fetchall()
 
     # Convert rows to a pandas DataFrame
-    df = pd.DataFrame(rows, columns=[
-        "timestamp_usec",
-        "video_id",
-        "video_offset_time_msec",
-        "message",
-        "release_timestamp",
-        "title",
-    ])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "timestamp_usec",
+            "video_id",
+            "video_offset_time_msec",
+            "message",
+            "release_timestamp",
+            "title",
+        ],
+    )
 
     # Ensure video_offset_time_msec is an integer
     df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
@@ -1025,7 +756,7 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
     # Determine file pattern and processing logic based on json_type
     if json_type == "live_chat":
         file_pattern = "**/*.live_chat.json"
-        process_function = parse_live_chat_json_buffered
+        process_function = async_parse_live_chat_json_buffered
     elif json_type == "info":
         file_pattern = "**/*.info.json"
         process_function = parse_info_json_to_postgres
@@ -1054,9 +785,9 @@ def main():
         "host": "localhost",
         "port": 5432,
     }
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
-    parse_jsons_to_postgres(directory_path, db_config, json_type="info")
-    # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025"
+    # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
+    parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
     # print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
