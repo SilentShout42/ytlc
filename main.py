@@ -965,7 +965,7 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
 def parse_info_json_to_postgres(json_path, db_config):
     """
     Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live.
     """
     # Connect to PostgreSQL database
     conn = psycopg2.connect(**db_config)
@@ -980,7 +980,8 @@ def parse_info_json_to_postgres(json_path, db_config):
             channel_id TEXT,
             channel_name TEXT,
             release_timestamp TIMESTAMP,
-            duration_seconds INTEGER
+            duration_seconds INTEGER,
+            was_live BOOLEAN
         )
         """
     )
@@ -999,6 +1000,8 @@ def parse_info_json_to_postgres(json_path, db_config):
                 duration_string = data.get("duration_string", None)
                 duration = parse_duration(duration_string)
 
+            was_live = data.get("was_live", None)
+
             # Convert timestamp to native PostgreSQL TIMESTAMP format in UTC
             release_timestamp = None
             if timestamp:
@@ -1007,14 +1010,15 @@ def parse_info_json_to_postgres(json_path, db_config):
             # Insert metadata into the database
             cursor.execute(
                 """
-                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (video_id) DO UPDATE SET
                     title = EXCLUDED.title,
                     channel_id = EXCLUDED.channel_id,
                     channel_name = EXCLUDED.channel_name,
                     release_timestamp = EXCLUDED.release_timestamp,
-                    duration_seconds = EXCLUDED.duration_seconds
+                    duration_seconds = EXCLUDED.duration_seconds,
+                    was_live = EXCLUDED.was_live
                 """,
                 (
                     video_id,
@@ -1023,6 +1027,7 @@ def parse_info_json_to_postgres(json_path, db_config):
                     channel_name,
                     release_timestamp,
                     duration,
+                    was_live,
                 ),
             )
     except Exception as e:
@@ -1080,11 +1085,11 @@ def main():
         "port": 5432,
     }
     directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
-    # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
+    parse_jsons_to_postgres(directory_path, db_config, json_type="info")
     # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
-    print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
+    # print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
     # generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])", window_size=120)
     # generate_sortable_html_table(db_config, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
