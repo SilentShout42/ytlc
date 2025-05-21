@@ -11,6 +11,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 import time
 import asyncio
+import sys
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -130,7 +131,11 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
         for line in infile:
             try:
                 obj = orjson.loads(line)
-                actions = obj.get("replayChatItemAction", {}).get("actions", [])
+                replay_chat_item_action = obj.get("replayChatItemAction", {})
+                if not replay_chat_item_action:
+                    print(f"Skipping line without replayChatItemAction in {json_path}")
+                    continue
+                actions = replay_chat_item_action.get("actions", [])
                 for action in actions:
                     item = action.get("addChatItemAction", {}).get("item", {})
                     renderer = item.get("liveChatTextMessageRenderer")
@@ -160,8 +165,12 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                         )
 
                         video_offset_time_msec = obj.get(
-                            "replayChatItemAction", {}
-                        ).get("videoOffsetTimeMsec", None)
+                            "videoOffsetTimeMsec",
+                            obj.get("replayChatItemAction", {}).get(
+                                "videoOffsetTimeMsec", None
+                            ),
+                        )
+
                         video_offset_time_text = renderer.get("timestampText", {}).get(
                             "simpleText", ""
                         )
@@ -184,7 +193,8 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                         if len(buffer) >= buffer_size:
                             yield buffer
                             buffer = []
-            except Exception:
+            except Exception as e:
+                print(f"Error processing line in {json_path}: {e}")
                 pass  # Ignore errors for now
 
     if buffer:
@@ -787,10 +797,10 @@ def main():
     }
     directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025"
     # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
-    parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
+    # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
-    # print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
+    print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
     # generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])", window_size=120)
     # generate_sortable_html_table(db_config, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
