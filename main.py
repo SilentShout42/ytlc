@@ -327,7 +327,7 @@ def extract_video_id_from_filename(filename):
 
 def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     """
-    Searches the PostgreSQL database for messages matching a regex pattern and groups them by video ID and time window.
+    Searches the PostgreSQL database for messages matching a regex pattern and finds windows of `window_size` seconds starting with the matching text.
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
@@ -380,41 +380,38 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
     matching_df = df[df["matches"]]
 
-    # Group by video_id and time window
-    matching_df["time_window"] = matching_df["timestamp"].dt.floor(f"{window_size}s")
-    grouped = matching_df.groupby(["video_id", "time_window"])
-
-    # Filter groups with at least the required number of matches
+    # Find windows of `window_size` seconds starting with the matching text
     results = []
-    for (video_id, time_window), group in grouped:
-        if len(group) >= min_matches:
-            first_message = group.iloc[0]
-            results.append(
-                {
-                    "video_id": video_id,
-                    "video_date": pd.to_datetime(
-                        first_message["release_timestamp"]
-                    ).strftime("%Y-%m-%d"),
-                    "video_title": first_message["title"],
-                    "video_offset_time_seconds": first_message["video_offset_time_msec"]
-                    // 1000,
-                    "timestamp_usec": first_message["timestamp_usec"],
-                    "message": first_message["message"],
-                }
-            )
+    for _, match_row in matching_df.iterrows():
+        start_time = match_row["timestamp"]
+        end_time = start_time + pd.Timedelta(seconds=window_size)
 
-    # Filter out consecutive matches from the same video that are less than window_size seconds apart
-    filtered_results = []
-    for result in sorted(results, key=lambda x: (x["video_id"], x["timestamp_usec"])):
-        if not filtered_results or (
-            result["video_id"] != filtered_results[-1]["video_id"] or
-            (result["timestamp_usec"] - filtered_results[-1]["timestamp_usec"]) / 1e6 >= window_size
-        ):
-            filtered_results.append(result)
+        # Filter for matches within the window and from the same video
+        window_df = matching_df[(matching_df["timestamp"] >= start_time) &
+                                (matching_df["timestamp"] < end_time) &
+                                (matching_df["video_id"] == match_row["video_id"])]
+
+        # Exclude consecutive matches from the same video that are less than `window_size` seconds apart
+        if not results or (results[-1]["video_id"] != match_row["video_id"] or
+                           (match_row["timestamp"] - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")).total_seconds() >= window_size):
+            if len(window_df) >= min_matches:
+                first_message = window_df.iloc[0]
+                results.append(
+                    {
+                        "video_id": first_message["video_id"],
+                        "video_date": pd.to_datetime(
+                            first_message["release_timestamp"]
+                        ).strftime("%Y-%m-%d"),
+                        "video_title": first_message["title"],
+                        "video_offset_time_seconds": first_message["video_offset_time_msec"] // 1000,
+                        "timestamp_usec": first_message["timestamp_usec"],
+                        "message": first_message["message"],
+                    }
+                )
 
     conn.close()
     # Ensure results are sorted by timestamp_usec (oldest to newest) before returning
-    return sorted(filtered_results, key=lambda x: x["timestamp_usec"])
+    return sorted(results, key=lambda x: x["timestamp_usec"])
 
 
 def print_search_results_as_markdown(
@@ -437,8 +434,8 @@ def print_search_results_as_markdown(
     results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
     # Print results as a markdown table
-    print("| Video Date | Video Title | Timestamp Link | Message Text |")
-    print("|------------|-------------|----------------|--------------|")
+    print("| Date | Title | Timestamp")
+    print("|-------|-------|----------|")
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
         timestamp_adjusted_seconds = max(
@@ -449,7 +446,7 @@ def print_search_results_as_markdown(
             "%H:%M:%S"
         )
         print(
-            f"| {result['video_date']} | [**{result['video_title']}**]({video_link}) | [**{timestamp_hms}**]({timestamp_link}) | {result['message']} |"
+            f"| {result['video_date']} | [{result['video_title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) |"
         )
 
 
