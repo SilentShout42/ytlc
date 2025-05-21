@@ -403,9 +403,18 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                 }
             )
 
-    # Sort results by timestamp_usec (oldest to newest)
+    # Filter out consecutive matches from the same video that are less than window_size seconds apart
+    filtered_results = []
+    for result in sorted(results, key=lambda x: (x["video_id"], x["timestamp_usec"])):
+        if not filtered_results or (
+            result["video_id"] != filtered_results[-1]["video_id"] or
+            (result["timestamp_usec"] - filtered_results[-1]["timestamp_usec"]) / 1e6 >= window_size
+        ):
+            filtered_results.append(result)
+
     conn.close()
-    return sorted(results, key=lambda x: x["timestamp_usec"])
+    # Ensure results are sorted by timestamp_usec (oldest to newest) before returning
+    return sorted(filtered_results, key=lambda x: x["timestamp_usec"])
 
 
 def print_search_results_as_markdown(
@@ -795,7 +804,7 @@ def main():
         "host": "localhost",
         "port": 5432,
     }
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2025"
+    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2024"
     # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
     # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
