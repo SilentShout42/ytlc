@@ -171,9 +171,7 @@ def parse_live_chat_json_buffered(json_path, buffer_size=10000):
                             for badge in renderer.get("authorBadges", [])
                         )
 
-                        video_offset_time_msec = obj.get(
-                            "replayChatItemAction", {}
-                        ).get("videoOffsetTimeMsec", None)
+                        video_offset_time_msec = obj.get("videoOffsetTimeMsec", None)
                         video_offset_time_text = renderer.get("timestampText", {}).get(
                             "simpleText", ""
                         )
@@ -305,17 +303,7 @@ def insert_messages_to_postgres(messages, db_config):
         f"""
         INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
         VALUES %s
-        ON CONFLICT (message_id) DO UPDATE SET
-            timestamp_usec = EXCLUDED.timestamp_usec,
-            timestamp_text = EXCLUDED.timestamp_text,
-            video_id = EXCLUDED.video_id,
-            author = EXCLUDED.author,
-            author_channel_id = EXCLUDED.author_channel_id,
-            message = EXCLUDED.message,
-            is_moderator = EXCLUDED.is_moderator,
-            is_channel_owner = EXCLUDED.is_channel_owner,
-            video_offset_time_msec = EXCLUDED.video_offset_time_msec,
-            video_offset_time_text = EXCLUDED.video_offset_time_text
+        ON CONFLICT (message_id) DO NOTHING
         """,
         [
             (
@@ -374,17 +362,7 @@ async def async_insert_messages_to_postgres(messages, db_config):
         f"""
         INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
         VALUES %s
-        ON CONFLICT (message_id) DO UPDATE SET
-            timestamp_usec = EXCLUDED.timestamp_usec,
-            timestamp_text = EXCLUDED.timestamp_text,
-            video_id = EXCLUDED.video_id,
-            author = EXCLUDED.author,
-            author_channel_id = EXCLUDED.author_channel_id,
-            message = EXCLUDED.message,
-            is_moderator = EXCLUDED.is_moderator,
-            is_channel_owner = EXCLUDED.is_channel_owner,
-            video_offset_time_msec = EXCLUDED.video_offset_time_msec,
-            video_offset_time_text = EXCLUDED.video_offset_time_text
+        ON CONFLICT (message_id) DO NOTHING
         """,
         [
             (
@@ -455,9 +433,7 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                             for badge in renderer.get("authorBadges", [])
                         )
 
-                        video_offset_time_msec = obj.get(
-                            "replayChatItemAction", {}
-                        ).get("videoOffsetTimeMsec", None)
+                        video_offset_time_msec = obj.get("videoOffsetTimeMsec", None)
                         video_offset_time_text = renderer.get("timestampText", {}).get(
                             "simpleText", ""
                         )
@@ -1012,13 +988,7 @@ def parse_info_json_to_postgres(json_path, db_config):
                 """
                 INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (video_id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    channel_id = EXCLUDED.channel_id,
-                    channel_name = EXCLUDED.channel_name,
-                    release_timestamp = EXCLUDED.release_timestamp,
-                    duration_seconds = EXCLUDED.duration_seconds,
-                    was_live = EXCLUDED.was_live
+                ON CONFLICT (video_id) DO NOTHING
                 """,
                 (
                     video_id,
