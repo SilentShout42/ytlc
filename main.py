@@ -611,12 +611,12 @@ def extract_video_id_from_filename(filename):
     return match.group(1)
 
 
-def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
+def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     """
-    Searches the database for messages matching a regex pattern and groups them by video ID and time window.
+    Searches the PostgreSQL database for messages matching a regex pattern and groups them by video ID and time window.
 
     Parameters:
-        db_path (str): Path to the SQLite database.
+        db_config (dict): Database configuration for PostgreSQL connection.
         regex_pattern (str): Regex pattern to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
@@ -624,9 +624,10 @@ def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
     Returns:
         list: A list of dictionaries containing grouped search results.
     """
-    import re
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
 
-    # Read messages and metadata from the database into a pandas DataFrame
+    # Query to fetch messages and metadata
     query = """
         SELECT
             lc.timestamp_usec,
@@ -638,7 +639,18 @@ def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
         FROM live_chat lc
         JOIN video_metadata vm ON lc.video_id = vm.video_id;
     """
-    df = pd.read_sql_query(query, sqlite3.connect(db_path))
+    cursor.execute(query)
+    rows = cursor.fetchall()
+
+    # Convert rows to a pandas DataFrame
+    df = pd.DataFrame(rows, columns=[
+        "timestamp_usec",
+        "video_id",
+        "video_offset_time_msec",
+        "message",
+        "release_timestamp",
+        "title",
+    ])
 
     # Ensure video_offset_time_msec is an integer
     df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
@@ -675,11 +687,12 @@ def search_messages(db_path, regex_pattern, window_size=60, min_matches=5):
             )
 
     # Sort results by timestamp_usec (oldest to newest)
+    conn.close()
     return sorted(results, key=lambda x: x["timestamp_usec"])
 
 
 def print_search_results_as_markdown(
-    db_path, regex_pattern, window_size=60, min_matches=5, timestamp_offset=10
+    db_config, regex_pattern, window_size=60, min_matches=5, timestamp_offset=10
 ):
     """
     Searches the database and prints results as a markdown table with columns:
@@ -689,13 +702,13 @@ def print_search_results_as_markdown(
     - Message Text
 
     Parameters:
-        db_path (str): Path to the SQLite database.
+        db_config (dict): Database configuration for PostgreSQL connection.
         regex_pattern (str): Regex pattern to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
         timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
     """
-    results = search_messages(db_path, regex_pattern, window_size, min_matches)
+    results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
     # Print results as a markdown table
     print("| Video Date | Video Title | Timestamp Link | Message Text |")
@@ -715,7 +728,7 @@ def print_search_results_as_markdown(
 
 
 def generate_sortable_html_table(
-    db_path,
+    db_config,
     regex_pattern,
     window_size=60,
     min_matches=5,
@@ -731,14 +744,14 @@ def generate_sortable_html_table(
     The table is saved to an HTML file for publishing.
 
     Parameters:
-        db_path (str): Path to the SQLite database.
+        db_config (dict): Database configuration for PostgreSQL connection.
         regex_pattern (str): Regex pattern to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
         output_file (str): Path to save the generated HTML file.
         timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
     """
-    results = search_messages(db_path, regex_pattern, window_size, min_matches)
+    results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
     # Generate HTML table
     html = """
@@ -1067,13 +1080,13 @@ def main():
         "port": 5432,
     }
     directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]"
-    parse_jsons_to_postgres(directory_path, db_config, json_type="info")
+    # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
     # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
-    # search_messages_in_database(db_path, r"(?i)bless you(?! [^!:k])")
-    # print_search_results_as_markdown(db_path, r"(?i)bless you(?! [^!:k])")
-    # generate_sortable_html_table(db_path, r"(?i)bless you(?! [^!:k])", window_size=120)
-    # generate_sortable_html_table(db_path, r"(?i)tskr", window_size=120, timestamp_offset=15)
+    # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
+    print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
+    # generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])", window_size=120)
+    # generate_sortable_html_table(db_config, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
 
 if __name__ == "__main__":
