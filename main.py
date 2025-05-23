@@ -12,6 +12,7 @@ from psycopg2.extras import execute_values
 import time
 import asyncio
 import sys
+import argparse
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -758,21 +759,29 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Parse YouTube JSON files and load them into PostgreSQL.")
+    parser.add_argument("directory_path", type=str, help="Directory path containing the JSON files.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--info-json", action="store_true", help="Parse info JSON files.")
+    group.add_argument("--live-chat-json", action="store_true", help="Parse live chat JSON files.")
+
+    args = parser.parse_args()
+
     db_config = {
         "dbname": "ytlc",
         "user": "ytlc",
         "host": "localhost",
         "port": 5432,
     }
-    directory_path = r"/home/wsluser/mnt/media/youtube/out/Kanna_Yanagi_ch._[UClxj3GlGphZVgd1SLYhZKmg]/2024"
-    # parse_jsons_to_postgres(directory_path, db_config, json_type="info")
-    # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
-    # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
-    # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
-    # print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
-    generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])")
-    # generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])", window_size=120)
-    # generate_sortable_html_table(db_config, r"(?i)tskr", window_size=120, timestamp_offset=15)
+
+    if not os.path.isdir(args.directory_path):
+        print(f"Error: Directory not found at {args.directory_path}")
+        return
+
+    if args.info_json:
+        parse_jsons_to_postgres(args.directory_path, db_config, json_type="info")
+    elif args.live_chat_json:
+        parse_jsons_to_postgres(args.directory_path, db_config, json_type="live_chat")
 
 
 if __name__ == "__main__":
