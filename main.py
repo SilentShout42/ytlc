@@ -759,11 +759,22 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Parse YouTube JSON files and load them into PostgreSQL.")
-    parser.add_argument("directory_path", type=str, help="Directory path containing the JSON files.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--info-json", action="store_true", help="Parse info JSON files.")
-    group.add_argument("--live-chat-json", action="store_true", help="Parse live chat JSON files.")
+    parser = argparse.ArgumentParser(description="Process YouTube data. Allows parsing JSON files or searching messages.")
+    subparsers = parser.add_subparsers(dest="command", required=True, title="actions",
+                                     description="Choose an action to perform:",
+                                     help="Run '<command> --help' for more information on a specific command.")
+
+    # Search sub-command
+    search_parser = subparsers.add_parser("search", help="Search messages and print results as markdown.")
+    search_parser.add_argument("regex_pattern", metavar="REGEX_PATTERN", type=str,
+                               help="Regex pattern to search for in messages.")
+
+    # Parse sub-command
+    parse_parser = subparsers.add_parser("parse", help="Parse JSON files and load into PostgreSQL.")
+    parse_parser.add_argument("--info-json", metavar="DIRECTORY_PATH", type=str,
+                              help="Directory path containing info JSON files to parse.")
+    parse_parser.add_argument("--live-chat-json", metavar="DIRECTORY_PATH", type=str,
+                              help="Directory path containing live chat JSON files to parse.")
 
     args = parser.parse_args()
 
@@ -774,14 +785,27 @@ def main():
         "port": 5432,
     }
 
-    if not os.path.isdir(args.directory_path):
-        print(f"Error: Directory not found at {args.directory_path}")
-        return
+    if args.command == "search":
+        print(f"Searching for pattern: '{args.regex_pattern}' and printing markdown results.")
+        print_search_results_as_markdown(db_config, args.regex_pattern)
 
-    if args.info_json:
-        parse_jsons_to_postgres(args.directory_path, db_config, json_type="info")
-    elif args.live_chat_json:
-        parse_jsons_to_postgres(args.directory_path, db_config, json_type="live_chat")
+    elif args.command == "parse":
+        if not args.info_json and not args.live_chat_json:
+            parse_parser.error("For the 'parse' command, you must specify --info-json and/or --live-chat-json path(s).")
+
+        if args.info_json:
+            directory_path_info = args.info_json
+            if not os.path.isdir(directory_path_info):
+                parse_parser.error(f"Directory for --info not found at {directory_path_info}")
+            print(f"Parsing info JSON files from: {directory_path_info}")
+            parse_jsons_to_postgres(directory_path_info, db_config, json_type="info")
+
+        if args.live_chat_json:
+            directory_path_live_chat_json = args.live_chat_json
+            if not os.path.isdir(directory_path_live_chat_json):
+                parse_parser.error(f"Directory for --live-chat not found at {directory_path_live_chat_json}")
+            print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
+            parse_jsons_to_postgres(directory_path_live_chat_json, db_config, json_type="live_chat")
 
 
 if __name__ == "__main__":
