@@ -58,6 +58,7 @@ def parse_message_runs(runs):
 async def async_insert_messages_to_postgres(messages, db_config):
     """
     Asynchronously inserts a batch of messages into the PostgreSQL database.
+    Deduplicates messages based on message_id before insertion.
 
     Parameters:
         messages (list): List of message dictionaries to insert.
@@ -85,30 +86,59 @@ async def async_insert_messages_to_postgres(messages, db_config):
         """
     )
 
-    execute_values(
-        cursor,
-        f"""
-        INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
-        VALUES %s
-        ON CONFLICT (message_id) DO NOTHING
-        """,
-        [
-            (
-                message["message_id"],
-                message["timestamp_usec"],
-                pd.to_datetime(message["timestamp_usec"], unit="us", utc=True),
-                message["video_id"],
-                message["author"],
-                message["author_channel_id"],
-                message["message"],
-                message["is_moderator"],
-                message["is_channel_owner"],
-                message["video_offset_time_msec"],
-                message["video_offset_time_text"],
-            )
-            for message in messages
-        ],
-    )
+    # Deduplicate messages based on message_id
+    unique_messages = {}
+    for message in messages:
+        unique_messages[message["message_id"]] = message
+
+    deduplicated_messages = list(unique_messages.values())
+
+    if len(deduplicated_messages) < len(messages):
+        print(f"Deduplicated {len(messages) - len(deduplicated_messages)} messages with duplicate message_ids")
+
+    try:
+        execute_values(
+            cursor,
+            f"""
+            INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+            VALUES %s
+            ON CONFLICT (message_id) DO UPDATE SET
+                timestamp_usec = EXCLUDED.timestamp_usec,
+                timestamp_text = EXCLUDED.timestamp_text,
+                video_id = EXCLUDED.video_id,
+                author = EXCLUDED.author,
+                author_channel_id = EXCLUDED.author_channel_id,
+                message = EXCLUDED.message,
+                is_moderator = EXCLUDED.is_moderator,
+                is_channel_owner = EXCLUDED.is_channel_owner,
+                video_offset_time_msec = EXCLUDED.video_offset_time_msec,
+                video_offset_time_text = EXCLUDED.video_offset_time_text
+            """,
+            [
+                (
+                    message["message_id"],
+                    message["timestamp_usec"],
+                    pd.to_datetime(message["timestamp_usec"], unit="us", utc=True),
+                    message["video_id"],
+                    message["author"],
+                    message["author_channel_id"],
+                    message["message"],
+                    message["is_moderator"],
+                    message["is_channel_owner"],
+                    message["video_offset_time_msec"],
+                    message["video_offset_time_text"],
+                )
+                for message in deduplicated_messages
+            ],
+        )
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+        # Print a sample of the problematic rows to help with debugging
+        if deduplicated_messages:
+            print(f"Sample of rows being inserted (first 3):")
+            for i, msg in enumerate(deduplicated_messages[:3]):
+                print(f"Row {i+1}: {msg}")
+        raise
 
     conn.commit()
     conn.close()
@@ -250,70 +280,17 @@ async def process_files_to_postgres_async(file_paths, db_config, buffer_size=100
     await commit_buffer_to_postgres(buffer, db_config)
 
 
-def process_files_to_postgres(file_paths, db_config, buffer_size=10000):
+async def process_files_to_postgres(file_paths, db_config, buffer_size=10000):
     """
-    Processes multiple JSON files, buffering messages and inserting them into PostgreSQL.
+    Asynchronously processes multiple JSON files, buffering messages and inserting them into PostgreSQL.
+    This is an alias for process_files_to_postgres_async for backward compatibility.
 
     Parameters:
         file_paths (list): List of file paths to process.
         db_config (dict): Database configuration for PostgreSQL connection.
         buffer_size (int): Number of messages to buffer before inserting.
     """
-    total_messages = 0
-    total_parse_time = 0
-    total_insert_time = 0
-    total_buffer_fill_time = 0  # Initialize total buffer fill time
-    buffer = []
-    buffer_start_time = time.time()
-
-    for file_path in file_paths:
-        for batch in parse_live_chat_json_buffered(file_path, buffer_size):
-            buffer.extend(batch)
-
-            if len(buffer) >= buffer_size:
-                # Log buffer fill time
-                buffer_fill_time = time.time() - buffer_start_time
-                total_buffer_fill_time += (
-                    buffer_fill_time  # Accumulate buffer fill time
-                )
-                print(
-                    f"Buffer filled with {len(buffer)} messages in {buffer_fill_time:.2f} seconds."
-                )
-
-                # Insert messages into the database
-                insert_start_time = time.time()
-                insert_messages_to_postgres(buffer, db_config)
-                insert_time = time.time() - insert_start_time
-                print(
-                    f"Inserted {len(buffer)} messages into the database in {insert_time:.2f} seconds."
-                )
-
-                total_insert_time += insert_time
-                total_messages += len(buffer)
-                buffer = []  # Clear the buffer
-                buffer_start_time = time.time()  # Reset buffer start time
-
-    # Flush remaining messages in the buffer
-    if buffer:
-        buffer_fill_time = time.time() - buffer_start_time
-        total_buffer_fill_time += buffer_fill_time  # Accumulate buffer fill time
-        print(
-            f"Flushing remaining {len(buffer)} messages after {buffer_fill_time:.2f} seconds."
-        )
-
-        insert_start_time = time.time()
-        insert_messages_to_postgres(buffer, db_config)
-        insert_time = time.time() - insert_start_time
-        print(
-            f"Inserted {len(buffer)} messages into the database in {insert_time:.2f} seconds."
-        )
-
-        total_insert_time += insert_time
-        total_messages += len(buffer)
-
-    print(
-        f"Processed {total_messages} messages in total. Total buffer fill time: {total_buffer_fill_time:.2f} seconds. Total insert time: {total_insert_time:.2f} seconds."
-    )
+    await process_files_to_postgres_async(file_paths, db_config, buffer_size)
 
 
 def extract_video_id_from_filename(filename):
@@ -558,7 +535,7 @@ def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
     conn.close()
 
 
-def parse_info_json_to_postgres(json_path, db_config):
+async def parse_info_json_to_postgres(json_path, db_config):
     """
     Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
     Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live.
@@ -608,7 +585,13 @@ def parse_info_json_to_postgres(json_path, db_config):
                 """
                 INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (video_id) DO NOTHING
+                ON CONFLICT (video_id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    channel_id = EXCLUDED.channel_id,
+                    channel_name = EXCLUDED.channel_name,
+                    release_timestamp = EXCLUDED.release_timestamp,
+                    duration_seconds = EXCLUDED.duration_seconds,
+                    was_live = EXCLUDED.was_live
                 """,
                 (
                     video_id,
@@ -628,7 +611,7 @@ def parse_info_json_to_postgres(json_path, db_config):
     conn.close()
 
 
-def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
+async def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
     """
     Parses all YouTube JSON files (live chat or info) in a directory tree and inserts data into a PostgreSQL database.
     For live chat JSONs, messages are stored in a single table named `live_chat`.
@@ -645,10 +628,8 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
     # Determine file pattern and processing logic based on json_type
     if json_type == "live_chat":
         file_pattern = "**/*.live_chat.json"
-        process_function = async_parse_live_chat_json_buffered
     elif json_type == "info":
         file_pattern = "**/*.info.json"
-        process_function = parse_info_json_to_postgres
     else:
         print(f"Error: Unsupported JSON type '{json_type}'.")
         return
@@ -657,10 +638,11 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
     json_files = glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)
 
     if json_type == "live_chat":
-        asyncio.run(process_files_to_postgres_async(json_files, db_config))
+        await process_files_to_postgres_async(json_files, db_config)
     else:
+        # Process info JSON files asynchronously
         for json_file in json_files:
-            process_function(json_file, db_config)
+            await parse_info_json_to_postgres(json_file, db_config)
 
     print(
         f"Processed {len(json_files)} {json_type} files into the PostgreSQL database."
@@ -732,7 +714,7 @@ def main():
                     f"Directory for --info not found at {directory_path_info}"
                 )
             print(f"Parsing info JSON files from: {directory_path_info}")
-            parse_jsons_to_postgres(directory_path_info, db_config, json_type="info")
+            asyncio.run(parse_jsons_to_postgres(directory_path_info, db_config, json_type="info"))
 
         if args.live_chat_json:
             directory_path_live_chat_json = args.live_chat_json
@@ -741,9 +723,9 @@ def main():
                     f"Directory for --live-chat not found at {directory_path_live_chat_json}"
                 )
             print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            parse_jsons_to_postgres(
+            asyncio.run(parse_jsons_to_postgres(
                 directory_path_live_chat_json, db_config, json_type="live_chat"
-            )
+            ))
 
 
 if __name__ == "__main__":
