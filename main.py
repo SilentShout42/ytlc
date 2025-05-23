@@ -18,23 +18,6 @@ import argparse
 pd.options.mode.copy_on_write = True
 
 
-class LiveChatMessage:
-    def __init__(self, timestamp_usec, video_id, video_offset_time_seconds, message):
-        self.timestamp_usec = timestamp_usec
-        self.video_id = video_id
-        self.video_offset_time_seconds = video_offset_time_seconds
-        self.message = message
-
-
-class VideoMetadata:
-    def __init__(self, video_id, title, channel_id, channel_name, release_timestamp):
-        self.video_id = video_id
-        self.title = title
-        self.channel_id = channel_id
-        self.channel_name = channel_name
-        self.release_timestamp = release_timestamp
-
-
 def parse_message_runs(runs):
     """
     Parses runs of text and emojis into a single message string.
@@ -94,7 +77,9 @@ async def async_insert_messages_to_postgres(messages, db_config):
     deduplicated_messages = list(unique_messages.values())
 
     if len(deduplicated_messages) < len(messages):
-        print(f"Deduplicated {len(messages) - len(deduplicated_messages)} messages with duplicate message_ids")
+        print(
+            f"Deduplicated {len(messages) - len(deduplicated_messages)} messages with duplicate message_ids"
+        )
 
     try:
         execute_values(
@@ -714,7 +699,11 @@ def main():
                     f"Directory for --info not found at {directory_path_info}"
                 )
             print(f"Parsing info JSON files from: {directory_path_info}")
-            asyncio.run(parse_jsons_to_postgres(directory_path_info, db_config, json_type="info"))
+            asyncio.run(
+                parse_jsons_to_postgres(
+                    directory_path_info, db_config, json_type="info"
+                )
+            )
 
         if args.live_chat_json:
             directory_path_live_chat_json = args.live_chat_json
@@ -723,9 +712,11 @@ def main():
                     f"Directory for --live-chat not found at {directory_path_live_chat_json}"
                 )
             print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            asyncio.run(parse_jsons_to_postgres(
-                directory_path_live_chat_json, db_config, json_type="live_chat"
-            ))
+            asyncio.run(
+                parse_jsons_to_postgres(
+                    directory_path_live_chat_json, db_config, json_type="live_chat"
+                )
+            )
 
 
 if __name__ == "__main__":
