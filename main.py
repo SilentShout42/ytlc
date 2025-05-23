@@ -328,45 +328,47 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
     matching_df = df[df["matches"]]
 
-    # Find windows of `window_size` seconds starting with the matching text
+    # Group matching rows by video_id and sort by timestamp_usec
+    grouped = matching_df.groupby("video_id", group_keys=False)
     results = []
-    for _, match_row in matching_df.iterrows():
-        start_time = match_row["timestamp"]
-        end_time = start_time + pd.Timedelta(seconds=window_size)
 
-        # Filter for matches within the window and from the same video
-        window_df = matching_df[
-            (matching_df["timestamp"] >= start_time)
-            & (matching_df["timestamp"] < end_time)
-            & (matching_df["video_id"] == match_row["video_id"])
-        ]
+    for video_id, group in grouped:
+        group = group.sort_values("timestamp_usec")
+        for i, match_row in group.iterrows():
+            start_time = match_row["timestamp"]
+            end_time = start_time + pd.Timedelta(seconds=window_size)
 
-        # Exclude consecutive matches from the same video that are less than `window_size` seconds apart
-        if not results or (
-            results[-1]["video_id"] != match_row["video_id"]
-            or (
-                match_row["timestamp"]
-                - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")
-            ).total_seconds()
-            >= window_size
-        ):
+            # Filter for matches within the window
+            window_df = group[
+                (group["timestamp"] >= start_time) & (group["timestamp"] < end_time)
+            ]
+
+            # Ensure min_matches and enforce window_size gap
             if len(window_df) >= min_matches:
-                first_message = window_df.iloc[0]
-                results.append(
-                    {
-                        "video_id": first_message["video_id"],
-                        "video_date": pd.to_datetime(
-                            first_message["release_timestamp"]
-                        ).strftime("%Y-%m-%d"),
-                        "video_title": first_message["title"],
-                        "video_offset_time_seconds": first_message[
-                            "video_offset_time_msec"
-                        ]
-                        // 1000,
-                        "timestamp_usec": first_message["timestamp_usec"],
-                        "message": first_message["message"],
-                    }
-                )
+                if not results or (
+                    results[-1]["video_id"] != video_id
+                    or (
+                        match_row["timestamp"]
+                        - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")
+                    ).total_seconds()
+                    >= window_size
+                ):
+                    first_message = window_df.iloc[0]
+                    results.append(
+                        {
+                            "video_id": first_message["video_id"],
+                            "video_date": pd.to_datetime(
+                                first_message["timestamp_usec"], unit="us", utc=True
+                            ).date(),
+                            "video_title": first_message["title"],
+                            "video_offset_time_seconds": first_message[
+                                "video_offset_time_msec"
+                            ]
+                            // 1000,
+                            "timestamp_usec": first_message["timestamp_usec"],
+                            "message": first_message["message"],
+                        }
+                    )
 
     conn.close()
     # Ensure results are sorted by timestamp_usec (oldest to newest) before returning
