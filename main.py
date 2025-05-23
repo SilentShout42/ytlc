@@ -446,6 +446,7 @@ def print_search_results_as_markdown(
     results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
     # Print results as a markdown table
+    print(f"Search pattern: `{regex_pattern}`")
     print("| Date | Title | Timestamp")
     print("|-------|-------|----------|")
     for result in results:
@@ -460,98 +461,6 @@ def print_search_results_as_markdown(
         print(
             f"| {result['video_date']} | [{result['video_title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) |"
         )
-
-
-def generate_sortable_html_table(
-    db_config,
-    regex_pattern,
-    window_size=60,
-    min_matches=5,
-    output_file="results.html",
-    timestamp_offset=10,
-):
-    """
-    Searches the database and generates a sortable HTML table using Tabulator with columns:
-    - Video Date (YYYY-mm-dd)
-    - Video Title (as a YouTube link)
-    - Timestamp Link (HH:MM:SS)
-    - Message Text
-    The table is saved to an HTML file for publishing.
-
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-        regex_pattern (str): Regex pattern to search for in messages.
-        window_size (int): Time window size in seconds for grouping messages.
-        min_matches (int): Minimum number of matches required within a time window.
-        output_file (str): Path to save the generated HTML file.
-        timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
-    """
-    results = search_messages(db_config, regex_pattern, window_size, min_matches)
-
-    # Generate HTML with Tabulator
-    html = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Search Results</title>
-        <link href="https://unpkg.com/tabulator-tables@5.4.4/dist/css/tabulator.min.css" rel="stylesheet">
-        <script src="https://unpkg.com/tabulator-tables@5.4.4/dist/js/tabulator.min.js"></script>
-    </head>
-    <body>
-        <h1>Search Results</h1>
-        <div id="resultsTable"></div>
-        <script>
-            const tableData = [
-    """
-
-    for result in results:
-        video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
-        timestamp_adjusted_seconds = max(
-            result["video_offset_time_seconds"] - timestamp_offset, 0
-        )
-        timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
-        timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
-            "%H:%M:%S"
-        )
-        html += """{
-                video_date: \"{}\",
-                video_title: \"<a href='{}' target='_blank'>{}</a>\",
-                timestamp_link: \"<a href='{}' target='_blank'>{}</a>\",
-                message_text: \"{}\"
-            },""".format(
-            result["video_date"],
-            video_link,
-            result["video_title"].replace('"', '\\"'),
-            timestamp_link,
-            timestamp_hms,
-            result["message"].replace('"', '\\"'),
-        )
-
-    html += """
-            ];
-
-            const table = new Tabulator("#resultsTable", {
-                data: tableData,
-                layout: "fitColumns",
-                columns: [
-                    { title: "Video Date", field: "video_date", sorter: "string" },
-                    { title: "Video Title", field: "video_title", formatter: "html" },
-                    { title: "Timestamp Link", field: "timestamp_link", formatter: "html" },
-                    { title: "Message Text", field: "message_text" },
-                ],
-            });
-        </script>
-    </body>
-    </html>
-    """
-
-    # Save HTML to file
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    print(f"Results saved to {output_file}")
 
 
 def parse_duration(duration_string):
@@ -759,22 +668,44 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process YouTube data. Allows parsing JSON files or searching messages.")
-    subparsers = parser.add_subparsers(dest="command", required=True, title="actions",
-                                     description="Choose an action to perform:",
-                                     help="Run '<command> --help' for more information on a specific command.")
+    parser = argparse.ArgumentParser(
+        description="Process YouTube data. Allows parsing JSON files or searching messages."
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        title="actions",
+        description="Choose an action to perform:",
+        help="Run '<command> --help' for more information on a specific command.",
+    )
 
     # Search sub-command
-    search_parser = subparsers.add_parser("search", help="Search messages and print results as markdown.")
-    search_parser.add_argument("regex_pattern", metavar="REGEX_PATTERN", type=str,
-                               help="Regex pattern to search for in messages.")
+    search_parser = subparsers.add_parser(
+        "search", help="Search messages and print results as markdown."
+    )
+    search_parser.add_argument(
+        "regex_pattern",
+        metavar="REGEX_PATTERN",
+        type=str,
+        help="Regex pattern to search for in messages.",
+    )
 
     # Parse sub-command
-    parse_parser = subparsers.add_parser("parse", help="Parse JSON files and load into PostgreSQL.")
-    parse_parser.add_argument("--info-json", metavar="DIRECTORY_PATH", type=str,
-                              help="Directory path containing info JSON files to parse.")
-    parse_parser.add_argument("--live-chat-json", metavar="DIRECTORY_PATH", type=str,
-                              help="Directory path containing live chat JSON files to parse.")
+    parse_parser = subparsers.add_parser(
+        "parse", help="Parse JSON files and load into PostgreSQL."
+    )
+    parse_parser.add_argument(
+        "--info-json",
+        metavar="DIRECTORY_PATH",
+        type=str,
+        help="Directory path containing info JSON files to parse.",
+    )
+    parse_parser.add_argument(
+        "--live-chat-json",
+        metavar="DIRECTORY_PATH",
+        type=str,
+        help="Directory path containing live chat JSON files to parse.",
+    )
 
     args = parser.parse_args()
 
@@ -786,26 +717,33 @@ def main():
     }
 
     if args.command == "search":
-        print(f"Searching for pattern: '{args.regex_pattern}' and printing markdown results.")
         print_search_results_as_markdown(db_config, args.regex_pattern)
 
     elif args.command == "parse":
         if not args.info_json and not args.live_chat_json:
-            parse_parser.error("For the 'parse' command, you must specify --info-json and/or --live-chat-json path(s).")
+            parse_parser.error(
+                "For the 'parse' command, you must specify --info-json and/or --live-chat-json path(s)."
+            )
 
         if args.info_json:
             directory_path_info = args.info_json
             if not os.path.isdir(directory_path_info):
-                parse_parser.error(f"Directory for --info not found at {directory_path_info}")
+                parse_parser.error(
+                    f"Directory for --info not found at {directory_path_info}"
+                )
             print(f"Parsing info JSON files from: {directory_path_info}")
             parse_jsons_to_postgres(directory_path_info, db_config, json_type="info")
 
         if args.live_chat_json:
             directory_path_live_chat_json = args.live_chat_json
             if not os.path.isdir(directory_path_live_chat_json):
-                parse_parser.error(f"Directory for --live-chat not found at {directory_path_live_chat_json}")
+                parse_parser.error(
+                    f"Directory for --live-chat not found at {directory_path_live_chat_json}"
+                )
             print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            parse_jsons_to_postgres(directory_path_live_chat_json, db_config, json_type="live_chat")
+            parse_jsons_to_postgres(
+                directory_path_live_chat_json, db_config, json_type="live_chat"
+            )
 
 
 if __name__ == "__main__":
