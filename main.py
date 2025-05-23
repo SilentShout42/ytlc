@@ -1,8 +1,6 @@
 import json
-import csv
 import os
 import pandas as pd
-import sqlite3
 import glob
 import re
 from collections import defaultdict
@@ -265,19 +263,6 @@ async def process_files_to_postgres_async(file_paths, db_config, buffer_size=100
     await commit_buffer_to_postgres(buffer, db_config)
 
 
-async def process_files_to_postgres(file_paths, db_config, buffer_size=10000):
-    """
-    Asynchronously processes multiple JSON files, buffering messages and inserting them into PostgreSQL.
-    This is an alias for process_files_to_postgres_async for backward compatibility.
-
-    Parameters:
-        file_paths (list): List of file paths to process.
-        db_config (dict): Database configuration for PostgreSQL connection.
-        buffer_size (int): Number of messages to buffer before inserting.
-    """
-    await process_files_to_postgres_async(file_paths, db_config, buffer_size)
-
-
 def extract_video_id_from_filename(filename):
     """
     Extracts the video ID from a filename enclosed in square brackets.
@@ -444,80 +429,6 @@ def parse_duration(duration_string):
         elif len(duration_parts) == 1:
             return duration_parts[0]
     return None
-
-
-def parse_info_json_to_sqlite(json_path, db_path="chat_messages.db"):
-    """
-    Parses a YouTube video info JSON file and inserts metadata into a SQLite database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds.
-    Stores release_timestamp in the format YYYY-MM-DD HH:MM:SS.SSSZ using the `timestamp` field.
-    """
-    # Connect to SQLite database
-    conn = sqlite3.connect(db_path)
-    conn.text_factory = str  # Ensure support for international characters
-    cursor = conn.cursor()
-
-    # Set SQLite pragmas for performance and reliability
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute(
-        "PRAGMA journal_size_limit=10485760;"
-    )  # Set journal size limit to 10 MB
-
-    # Create the video_metadata table if it doesn't exist
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS video_metadata (
-            video_id TEXT PRIMARY KEY,
-            title TEXT,
-            channel_id TEXT,
-            channel_name TEXT,
-            release_timestamp TEXT,
-            duration_seconds INTEGER
-        )
-        """
-    )
-
-    try:
-        with open(json_path, "r", encoding="utf-8") as infile:
-            data = orjson.loads(infile.read())
-            # Extract required fields
-            video_id = data.get("id", "")
-            title = data.get("title", "")
-            channel_id = data.get("channel_id", "")
-            channel_name = data.get("channel", "")
-            timestamp = data.get("timestamp", None)
-            duration = data.get("duration", None)
-            if not duration:
-                duration_string = data.get("duration_string", None)
-                duration = parse_duration(duration_string)
-
-            # Convert timestamp to ISO 8601 format with time (YYYY-MM-DD HH:MM:SS.SSSZ)
-            release_timestamp = ""
-            if timestamp:
-                release_timestamp = f"{pd.to_datetime(timestamp, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}Z"
-
-            # Insert metadata into the database
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    video_id,
-                    title,
-                    channel_id,
-                    channel_name,
-                    release_timestamp,
-                    duration,
-                ),
-            )
-    except Exception as e:
-        print(f"Error processing file {json_path}: {e}")
-
-    # Commit changes and close the connection
-    conn.commit()
-    conn.close()
 
 
 async def parse_info_json_to_postgres(json_path, db_config):
