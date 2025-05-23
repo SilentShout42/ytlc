@@ -387,13 +387,21 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
         end_time = start_time + pd.Timedelta(seconds=window_size)
 
         # Filter for matches within the window and from the same video
-        window_df = matching_df[(matching_df["timestamp"] >= start_time) &
-                                (matching_df["timestamp"] < end_time) &
-                                (matching_df["video_id"] == match_row["video_id"])]
+        window_df = matching_df[
+            (matching_df["timestamp"] >= start_time)
+            & (matching_df["timestamp"] < end_time)
+            & (matching_df["video_id"] == match_row["video_id"])
+        ]
 
         # Exclude consecutive matches from the same video that are less than `window_size` seconds apart
-        if not results or (results[-1]["video_id"] != match_row["video_id"] or
-                           (match_row["timestamp"] - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")).total_seconds() >= window_size):
+        if not results or (
+            results[-1]["video_id"] != match_row["video_id"]
+            or (
+                match_row["timestamp"]
+                - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")
+            ).total_seconds()
+            >= window_size
+        ):
             if len(window_df) >= min_matches:
                 first_message = window_df.iloc[0]
                 results.append(
@@ -403,7 +411,10 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                             first_message["release_timestamp"]
                         ).strftime("%Y-%m-%d"),
                         "video_title": first_message["title"],
-                        "video_offset_time_seconds": first_message["video_offset_time_msec"] // 1000,
+                        "video_offset_time_seconds": first_message[
+                            "video_offset_time_msec"
+                        ]
+                        // 1000,
                         "timestamp_usec": first_message["timestamp_usec"],
                         "message": first_message["message"],
                     }
@@ -459,7 +470,7 @@ def generate_sortable_html_table(
     timestamp_offset=10,
 ):
     """
-    Searches the database and generates a sortable HTML table with columns:
+    Searches the database and generates a sortable HTML table using Tabulator with columns:
     - Video Date (YYYY-mm-dd)
     - Video Title (as a YouTube link)
     - Timestamp Link (HH:MM:SS)
@@ -476,7 +487,7 @@ def generate_sortable_html_table(
     """
     results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
-    # Generate HTML table
+    # Generate HTML with Tabulator
     html = """
     <!DOCTYPE html>
     <html lang="en">
@@ -484,78 +495,14 @@ def generate_sortable_html_table(
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Search Results</title>
-        <style>
-            table {
-                width: 100%;
-                border-collapse: collapse;
-            }
-            th, td {
-                border: 1px solid #ddd;
-                padding: 8px;
-                text-align: left;
-            }
-            th {
-                cursor: pointer;
-                background-color: #f2f2f2;
-            }
-            tr:nth-child(even) {
-                background-color: #f9f9f9;
-            }
-            tr:hover {
-                background-color: #f1f1f1;
-            }
-        </style>
-        <script>
-            function sortTable(n) {
-                const table = document.getElementById("resultsTable");
-                let rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
-                switching = true;
-                dir = "asc";
-                while (switching) {
-                    switching = false;
-                    rows = table.rows;
-                    for (i = 1; i < (rows.length - 1); i++) {
-                        shouldSwitch = false;
-                        x = rows[i].getElementsByTagName("TD")[n];
-                        y = rows[i + 1].getElementsByTagName("TD")[n];
-                        if (dir === "asc") {
-                            if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {
-                                shouldSwitch = true;
-                                break;
-                            }
-                        } else if (dir === "desc") {
-                            if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {
-                                shouldSwitch = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (shouldSwitch) {
-                        rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
-                        switching = true;
-                        switchcount++;
-                    } else {
-                        if (switchcount === 0 && dir === "asc") {
-                            dir = "desc";
-                            switching = true;
-                        }
-                    }
-                }
-            }
-        </script>
+        <link href="https://unpkg.com/tabulator-tables@5.4.4/dist/css/tabulator.min.css" rel="stylesheet">
+        <script src="https://unpkg.com/tabulator-tables@5.4.4/dist/js/tabulator.min.js"></script>
     </head>
     <body>
         <h1>Search Results</h1>
-        <table id="resultsTable">
-            <thead>
-                <tr>
-                    <th onclick="sortTable(0)">Video Date</th>
-                    <th onclick="sortTable(1)">Video Title</th>
-                    <th onclick="sortTable(2)">Timestamp Link</th>
-                    <th onclick="sortTable(3)">Message Text</th>
-                </tr>
-            </thead>
-            <tbody>
+        <div id="resultsTable"></div>
+        <script>
+            const tableData = [
     """
 
     for result in results:
@@ -567,18 +514,34 @@ def generate_sortable_html_table(
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
             "%H:%M:%S"
         )
-        html += f"<tr>"
-        html += f"<td>{result['video_date']}</td>"
-        html += f"<td><a href='{video_link}' target='_blank'>{result['video_title']}</a></td>"
-        html += (
-            f"<td><a href='{timestamp_link}' target='_blank'>{timestamp_hms}</a></td>"
+        html += """{
+                video_date: \"{}\",
+                video_title: \"<a href='{}' target='_blank'>{}</a>\",
+                timestamp_link: \"<a href='{}' target='_blank'>{}</a>\",
+                message_text: \"{}\"
+            },""".format(
+            result["video_date"],
+            video_link,
+            result["video_title"].replace('"', '\\"'),
+            timestamp_link,
+            timestamp_hms,
+            result["message"].replace('"', '\\"'),
         )
-        html += f"<td>{result['message']}</td>"
-        html += f"</tr>"
 
     html += """
-            </tbody>
-        </table>
+            ];
+
+            const table = new Tabulator("#resultsTable", {
+                data: tableData,
+                layout: "fitColumns",
+                columns: [
+                    { title: "Video Date", field: "video_date", sorter: "string" },
+                    { title: "Video Title", field: "video_title", formatter: "html" },
+                    { title: "Timestamp Link", field: "timestamp_link", formatter: "html" },
+                    { title: "Message Text", field: "message_text" },
+                ],
+            });
+        </script>
     </body>
     </html>
     """
@@ -806,7 +769,8 @@ def main():
     # parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat")
     # search_messages_in_database(db_path, r"(?i)^(?=.*bless you)(?!.*god).*$")
     # search_messages(db_config, r"(?i)bless you(?! [^!:k])")
-    print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
+    # print_search_results_as_markdown(db_config, r"(?i)bless you(?! [^!:k])")
+    generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])")
     # generate_sortable_html_table(db_config, r"(?i)bless you(?! [^!:k])", window_size=120)
     # generate_sortable_html_table(db_config, r"(?i)tskr", window_size=120, timestamp_offset=15)
 
