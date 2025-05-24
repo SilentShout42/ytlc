@@ -11,6 +11,11 @@ import time
 import asyncio
 import sys
 import argparse
+from rich.markdown import Markdown
+from rich.console import Console
+from rich.text import Text
+from rich.markup import escape
+from rich import print
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -311,7 +316,9 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     df = pd.read_sql_query(query, conn_str)
 
     # Ensure video_offset_time_seconds is an integer
-    df["video_offset_time_seconds"] = df["video_offset_time_seconds"].fillna(0).astype(int)
+    df["video_offset_time_seconds"] = (
+        df["video_offset_time_seconds"].fillna(0).astype(int)
+    )
 
     # Filter rows matching the regex pattern
     pattern = re.compile(regex_pattern)
@@ -338,8 +345,7 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                 if not results or (
                     results[-1]["video_id"] != video_id
                     or (
-                        match_row["timestamp"]
-                        - results[-1]["timestamp"]
+                        match_row["timestamp"] - results[-1]["timestamp"]
                     ).total_seconds()
                     >= window_size
                 ):
@@ -351,7 +357,13 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
 
 
 def print_search_results_as_markdown(
-    db_config, regex_pattern, window_size=60, min_matches=5, timestamp_offset=-10, output_file=None, debug=False
+    db_config,
+    regex_pattern,
+    window_size=60,
+    min_matches=5,
+    timestamp_offset=-10,
+    output_file=None,
+    debug=False,
 ):
     """
     Searches the database and prints results as a markdown table with columns:
@@ -371,19 +383,16 @@ def print_search_results_as_markdown(
     """
     results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
-    # Prepare markdown output
+    # Define headers as a list based on debug mode
+    headers = ["Date", "Title", "Timestamp"]
     if debug:
-        output_lines = [
-            f"Search pattern: `{regex_pattern}`",
-            "| Date | Title | Timestamp | Author | Message |",
-            "|-------|-------|----------|--------|---------|",
-        ]
-    else:
-        output_lines = [
-            f"Search pattern: `{regex_pattern}`",
-            "| Date | Title | Timestamp |",
-            "|-------|-------|----------|",
-        ]
+        headers.extend(["Author", "Message"])
+
+    # Generate markdown header and spacer line dynamically
+    header_line = f"| {' | '.join(headers)} |"
+    spacer_line = f"|{'------|' * len(headers)}"
+
+    output_lines = [header_line, spacer_line]
 
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
@@ -394,21 +403,41 @@ def print_search_results_as_markdown(
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
             "%H:%M:%S"
         )
+
+        row = [
+            f"{result['timestamp'].date()}",
+            f"[{result['title']}]({video_link})",
+            f"[{timestamp_hms}]({timestamp_link})",
+        ]
+
         if debug:
-            output_lines.append(
-                f"| {result['timestamp'].date()} | [{result['title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) | {result.get('author', '')} | {result.get('message', '')} |"
-            )
-        else:
-            output_lines.append(
-                f"| {result['timestamp'].date()} | [{result['title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) |"
+            row.extend(
+                [
+                    result.get("author", ""),
+                    result.get("message", ""),
+                ]
             )
 
-    # Write to file or print to console
-    if output_file:
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(output_lines) + "\n")
-    else:
-        print("\n".join(output_lines))
+        output_lines.append(f"| {' | '.join(row)} |")
+
+    # Escape characters in the regex pattern that might interfere with markdown display
+    escaped_regex_pattern = re.sub(r'([*_~|`])', r'\\\\\1', regex_pattern)
+
+    # Add a summary table with search parameters
+    output_lines.append("\n")
+    output_lines.append("| Parameter       | Value |")
+    output_lines.append("|-----------------|-------|")
+    output_lines.append(f"| Search Pattern  | `{escaped_regex_pattern}` |")
+    output_lines.append(f"| Window Size     | {window_size} seconds |")
+    output_lines.append(f"| Minimum Matches | {min_matches} |")
+    output_lines.append(
+        f"| Generated At    | {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} |"
+    )
+
+    # Escape markdown output using rich's escape function
+    escaped_output_lines = [escape(line) for line in output_lines]
+    markdown_output = "\n".join(escaped_output_lines)
+    print(Markdown(markdown_output))
 
 
 def parse_duration(duration_string):
