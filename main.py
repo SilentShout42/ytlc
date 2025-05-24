@@ -8,6 +8,7 @@ from rich.markdown import Markdown
 from rich.console import Console
 from rich.markup import escape
 from rich import print
+from math import ceil
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -41,7 +42,8 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
             lc.author,
             lc.author_channel_id,
             vm.release_timestamp,
-            vm.title
+            vm.title,
+            lc.video_offset_time_msec
         FROM live_chat lc
         JOIN video_metadata vm ON lc.video_id = vm.video_id;
     """
@@ -148,7 +150,7 @@ def print_search_results_as_markdown(
         debug (bool): Whether to include Author and Message columns in the output.
     """
     results = search_messages(db_config, regex_patterns, window_size, min_matches)
-    offsets = get_video_offsets(db_config)
+    # offsets = get_video_offsets(db_config)
 
     # Define headers as a list based on debug mode
     headers = ["Date", "Title", "Timestamp"]
@@ -163,8 +165,14 @@ def print_search_results_as_markdown(
 
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
-        timestamp_adjusted_seconds = max(
-            result["video_offset_time_seconds"] + timestamp_offset  - offsets.get(result["video_id"], 0), 0
+
+        # Use msec if available, otherwise use the computed offset from the database
+        msec = result.get("video_offset_time_msec", 0)
+        if msec > 0:
+            result["video_offset_time_seconds"] = msec / 1000
+
+        timestamp_adjusted_seconds = int(
+            ceil(result["video_offset_time_seconds"] + timestamp_offset)
         )
         timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
@@ -188,7 +196,9 @@ def print_search_results_as_markdown(
         output_lines.append(f"| {' | '.join(row)} |")
 
     # Escape characters in the regex patterns that might interfere with markdown display
-    escaped_regex_patterns = [re.sub(r"([*_~|`])", r"\\\\\1", pattern) for pattern in regex_patterns]
+    escaped_regex_patterns = [
+        re.sub(r"([*_~|`])", r"\\\\\1", pattern) for pattern in regex_patterns
+    ]
 
     # Add a summary table with search parameters
     output_lines.append("\n")
