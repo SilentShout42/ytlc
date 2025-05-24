@@ -436,7 +436,7 @@ def parse_duration(duration_string):
 async def parse_info_json_to_postgres(json_path, db_config):
     """
     Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration, was_live.
     """
     # Connect to PostgreSQL database
     conn = psycopg2.connect(**db_config)
@@ -451,7 +451,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
             channel_id TEXT,
             channel_name TEXT,
             release_timestamp TIMESTAMP,
-            duration_seconds INTEGER,
+            duration INTERVAL,
             was_live BOOLEAN
         )
         """
@@ -481,14 +481,14 @@ async def parse_info_json_to_postgres(json_path, db_config):
             # Insert metadata into the database
             cursor.execute(
                 """
-                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration_seconds, was_live)
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration, was_live)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (video_id) DO UPDATE SET
                     title = EXCLUDED.title,
                     channel_id = EXCLUDED.channel_id,
                     channel_name = EXCLUDED.channel_name,
                     release_timestamp = EXCLUDED.release_timestamp,
-                    duration_seconds = EXCLUDED.duration_seconds,
+                    duration = EXCLUDED.duration,
                     was_live = EXCLUDED.was_live
                 """,
                 (
@@ -497,7 +497,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
                     channel_id,
                     channel_name,
                     release_timestamp,
-                    duration,
+                    pd.Timedelta(seconds=duration) if duration else None,
                     was_live,
                 ),
             )
