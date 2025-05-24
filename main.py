@@ -289,39 +289,29 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     Returns:
         list: A list of dictionaries containing grouped search results.
     """
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
+    # Create a connection string for pandas
+    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
 
     # Query to fetch messages and metadata
     query = """
         SELECT
             lc.timestamp,
             lc.video_id,
-            lc.video_offset_time_msec,
+            ceil(extract(epoch from age(lc.timestamp, vm.release_timestamp))) as video_offset_time_seconds,
             lc.message,
+            lc.author,
+            lc.author_channel_id,
             vm.release_timestamp,
             vm.title
         FROM live_chat lc
         JOIN video_metadata vm ON lc.video_id = vm.video_id;
     """
-    cursor.execute(query)
-    rows = cursor.fetchall()
 
-    # Convert rows to a pandas DataFrame
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "timestamp",
-            "video_id",
-            "video_offset_time_msec",
-            "message",
-            "release_timestamp",
-            "title",
-        ],
-    )
+    # Use pandas to read directly from the database into a DataFrame
+    df = pd.read_sql_query(query, conn_str)
 
-    # Ensure video_offset_time_msec is an integer
-    df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
+    # Ensure video_offset_time_seconds is an integer
+    df["video_offset_time_seconds"] = df["video_offset_time_seconds"].fillna(0).astype(int)
 
     # Filter rows matching the regex pattern
     pattern = re.compile(regex_pattern)
@@ -353,34 +343,22 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                     ).total_seconds()
                     >= window_size
                 ):
-                    first_message = window_df.iloc[0]
-                    results.append(
-                        {
-                            "video_id": first_message["video_id"],
-                            "video_date": first_message["timestamp"].date(),
-                            "video_title": first_message["title"],
-                            "video_offset_time_seconds": first_message[
-                                "video_offset_time_msec"
-                            ] // 1000,
-                            "timestamp": first_message["timestamp"],
-                            "message": first_message["message"],
-                        }
-                    )
+                    first_message = window_df.iloc[0].to_dict()
+                    results.append(first_message)
 
-    conn.close()
     # Ensure results are sorted by timestamp (oldest to newest) before returning
     return sorted(results, key=lambda x: x["timestamp"])
 
 
 def print_search_results_as_markdown(
-    db_config, regex_pattern, window_size=60, min_matches=5, timestamp_offset=10
+    db_config, regex_pattern, window_size=60, min_matches=5, timestamp_offset=-10, output_file=None, debug=False
 ):
     """
     Searches the database and prints results as a markdown table with columns:
     - Video Date (YYYY-mm-dd)
     - Video Title (as a YouTube link)
     - Timestamp Link (HH:MM:SS)
-    - Message Text
+    Optionally includes Author and Message columns if debug is enabled.
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
@@ -388,25 +366,49 @@ def print_search_results_as_markdown(
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
         timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
+        output_file (str): Path to the file to write results to.
+        debug (bool): Whether to include Author and Message columns in the output.
     """
     results = search_messages(db_config, regex_pattern, window_size, min_matches)
 
-    # Print results as a markdown table
-    print(f"Search pattern: `{regex_pattern}`")
-    print("| Date | Title | Timestamp")
-    print("|-------|-------|----------|")
+    # Prepare markdown output
+    if debug:
+        output_lines = [
+            f"Search pattern: `{regex_pattern}`",
+            "| Date | Title | Timestamp | Author | Message |",
+            "|-------|-------|----------|--------|---------|",
+        ]
+    else:
+        output_lines = [
+            f"Search pattern: `{regex_pattern}`",
+            "| Date | Title | Timestamp |",
+            "|-------|-------|----------|",
+        ]
+
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
         timestamp_adjusted_seconds = max(
-            result["video_offset_time_seconds"] - timestamp_offset, 0
+            result["video_offset_time_seconds"] + timestamp_offset, 0
         )
         timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
             "%H:%M:%S"
         )
-        print(
-            f"| {result['video_date']} | [{result['video_title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) |"
-        )
+        if debug:
+            output_lines.append(
+                f"| {result['timestamp'].date()} | [{result['title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) | {result.get('author', '')} | {result.get('message', '')} |"
+            )
+        else:
+            output_lines.append(
+                f"| {result['timestamp'].date()} | [{result['title']}]({video_link}) | [{timestamp_hms}]({timestamp_link}) |"
+            )
+
+    # Write to file or print to console
+    if output_file:
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(output_lines) + "\n")
+    else:
+        print("\n".join(output_lines))
 
 
 def parse_duration(duration_string):
@@ -449,6 +451,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
             channel_id TEXT,
             channel_name TEXT,
             release_timestamp TIMESTAMPTZ,
+            timestamp TIMESTAMPTZ,
             duration INTERVAL,
             was_live BOOLEAN
         )
@@ -469,6 +472,12 @@ async def parse_info_json_to_postgres(json_path, db_config):
                 utc=True,
                 origin="unix",
             )
+            timestamp = pd.to_datetime(
+                int(data.get("timestamp", "0")),
+                unit="s",
+                utc=True,
+                origin="unix",
+            )
             duration = data.get("duration", None)
             if not duration:
                 duration_string = data.get("duration_string", None)
@@ -479,13 +488,14 @@ async def parse_info_json_to_postgres(json_path, db_config):
             # Insert metadata into the database
             cursor.execute(
                 """
-                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, duration, was_live)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, timestamp, duration, was_live)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (video_id) DO UPDATE SET
                     title = EXCLUDED.title,
                     channel_id = EXCLUDED.channel_id,
                     channel_name = EXCLUDED.channel_name,
                     release_timestamp = EXCLUDED.release_timestamp,
+                    timestamp = EXCLUDED.timestamp,
                     duration = EXCLUDED.duration,
                     was_live = EXCLUDED.was_live
                 """,
@@ -495,6 +505,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
                     channel_id,
                     channel_name,
                     release_timestamp,
+                    timestamp,
                     pd.Timedelta(seconds=duration) if duration else None,
                     was_live,
                 ),
@@ -567,6 +578,18 @@ def main():
         type=str,
         help="Regex pattern to search for in messages.",
     )
+    search_parser.add_argument(
+        "-o",
+        "--output-file",
+        metavar="OUTPUT_FILE",
+        type=str,
+        help="File to write search results to.",
+    )
+    search_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Include Author and Message columns in the output.",
+    )
 
     # Parse sub-command
     parse_parser = subparsers.add_parser(
@@ -595,7 +618,12 @@ def main():
     }
 
     if args.command == "search":
-        print_search_results_as_markdown(db_config, args.regex_pattern)
+        print_search_results_as_markdown(
+            db_config,
+            args.regex_pattern,
+            output_file=args.output_file,
+            debug=args.debug,
+        )
 
     elif args.command == "parse":
         if not args.info_json and not args.live_chat_json:
