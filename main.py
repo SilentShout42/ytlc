@@ -86,15 +86,15 @@ async def async_insert_messages_to_postgres(messages, db_config):
             INSERT INTO {table_name} (message_id, timestamp, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
             VALUES %s
             ON CONFLICT (message_id) DO UPDATE SET
-                timestamp = EXCLUDED.timestamp,
-                video_id = EXCLUDED.video_id,
-                author = EXCLUDED.author,
-                author_channel_id = EXCLUDED.author_channel_id,
-                message = EXCLUDED.message,
-                is_moderator = EXCLUDED.is_moderator,
-                is_channel_owner = EXCLUDED.is_channel_owner,
-                video_offset_time_msec = EXCLUDED.video_offset_time_msec,
-                video_offset_time_text = EXCLUDED.video_offset_time_text
+                timestamp = COALESCE(EXCLUDED.timestamp, live_chat.timestamp),
+                video_id = COALESCE(NULLIF(EXCLUDED.video_id, ''), live_chat.video_id),
+                author = COALESCE(NULLIF(EXCLUDED.author, ''), live_chat.author),
+                author_channel_id = COALESCE(NULLIF(EXCLUDED.author_channel_id, ''), live_chat.author_channel_id),
+                message = COALESCE(NULLIF(EXCLUDED.message, ''), live_chat.message),
+                is_moderator = COALESCE(EXCLUDED.is_moderator, live_chat.is_moderator),
+                is_channel_owner = COALESCE(EXCLUDED.is_channel_owner, live_chat.is_channel_owner),
+                video_offset_time_msec = COALESCE(EXCLUDED.video_offset_time_msec, live_chat.video_offset_time_msec),
+                video_offset_time_text = COALESCE(NULLIF(EXCLUDED.video_offset_time_text, ''), live_chat.video_offset_time_text)
             """,
             [
                 (
@@ -491,13 +491,13 @@ async def parse_info_json_to_postgres(json_path, db_config):
                 INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, timestamp, duration, was_live)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (video_id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    channel_id = EXCLUDED.channel_id,
-                    channel_name = EXCLUDED.channel_name,
-                    release_timestamp = EXCLUDED.release_timestamp,
-                    timestamp = EXCLUDED.timestamp,
-                    duration = EXCLUDED.duration,
-                    was_live = EXCLUDED.was_live
+                    title = COALESCE(NULLIF(EXCLUDED.title, ''), video_metadata.title),
+                    channel_id = COALESCE(NULLIF(EXCLUDED.channel_id, ''), video_metadata.channel_id),
+                    channel_name = COALESCE(NULLIF(EXCLUDED.channel_name, ''), video_metadata.channel_name),
+                    release_timestamp = COALESCE(EXCLUDED.release_timestamp, video_metadata.release_timestamp),
+                    timestamp = COALESCE(EXCLUDED.timestamp, video_metadata.timestamp),
+                    duration = COALESCE(EXCLUDED.duration, video_metadata.duration),
+                    was_live = COALESCE(EXCLUDED.was_live, video_metadata.was_live)
                 """,
                 (
                     video_id,
