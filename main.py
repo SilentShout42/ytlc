@@ -15,13 +15,13 @@ pd.options.mode.copy_on_write = True
 from parser import parse_jsons_to_postgres
 
 
-def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
+def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
     """
-    Searches the PostgreSQL database for messages matching a regex pattern and finds windows of `window_size` seconds starting with the matching text.
+    Searches the PostgreSQL database for messages matching a list of regex patterns and finds windows of `window_size` seconds starting with the matching text.
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
-        regex_pattern (str): Regex pattern to search for in messages.
+        regex_patterns (list): List of regex patterns to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
 
@@ -54,9 +54,11 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
         df["video_offset_time_seconds"].fillna(0).astype(int)
     )
 
-    # Filter rows matching the regex pattern
-    pattern = re.compile(regex_pattern)
-    df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
+    # Filter rows matching any of the regex patterns
+    patterns = [re.compile(pattern) for pattern in regex_patterns]
+    df["matches"] = df["message"].apply(
+        lambda x: any(pattern.search(x) for pattern in patterns)
+    )
     matching_df = df[df["matches"]]
 
     # Group matching rows by video_id and sort by timestamp
@@ -90,9 +92,39 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     return sorted(results, key=lambda x: x["timestamp"])
 
 
+def get_video_offsets(db_config):
+    """
+    Builds a dictionary of video_id to offsets based on the minimum timestamp difference
+    between live chat messages and video release timestamps.
+
+    Parameters:
+        db_config (dict): Database configuration for PostgreSQL connection.
+
+    Returns:
+        dict: A dictionary where keys are video_id and values are offsets in seconds.
+    """
+    # Create a connection string for pandas
+    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+
+    # Query to calculate offsets
+    query = """
+        SELECT
+            vm.video_id,
+            EXTRACT(EPOCH FROM MIN(lc.timestamp) - vm.release_timestamp) AS offset_seconds
+        FROM live_chat lc
+        JOIN video_metadata vm ON lc.video_id = vm.video_id
+        WHERE lc.timestamp >= vm.release_timestamp
+        GROUP BY vm.video_id;
+    """
+
+    # Use pandas to execute the query and build the dictionary
+    df = pd.read_sql_query(query, conn_str)
+    return dict(zip(df["video_id"], df["offset_seconds"].astype(int)))
+
+
 def print_search_results_as_markdown(
     db_config,
-    regex_pattern,
+    regex_patterns,
     window_size=60,
     min_matches=5,
     timestamp_offset=-10,
@@ -108,14 +140,15 @@ def print_search_results_as_markdown(
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
-        regex_pattern (str): Regex pattern to search for in messages.
+        regex_patterns (list): List of regex patterns to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
         timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
         output_file (str): Path to the file to write results to.
         debug (bool): Whether to include Author and Message columns in the output.
     """
-    results = search_messages(db_config, regex_pattern, window_size, min_matches)
+    results = search_messages(db_config, regex_patterns, window_size, min_matches)
+    offsets = get_video_offsets(db_config)
 
     # Define headers as a list based on debug mode
     headers = ["Date", "Title", "Timestamp"]
@@ -131,7 +164,7 @@ def print_search_results_as_markdown(
     for result in results:
         video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
         timestamp_adjusted_seconds = max(
-            result["video_offset_time_seconds"] + timestamp_offset, 0
+            result["video_offset_time_seconds"] + timestamp_offset  - offsets.get(result["video_id"], 0), 0
         )
         timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
         timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
@@ -154,14 +187,14 @@ def print_search_results_as_markdown(
 
         output_lines.append(f"| {' | '.join(row)} |")
 
-    # Escape characters in the regex pattern that might interfere with markdown display
-    escaped_regex_pattern = re.sub(r"([*_~|`])", r"\\\\\1", regex_pattern)
+    # Escape characters in the regex patterns that might interfere with markdown display
+    escaped_regex_patterns = [re.sub(r"([*_~|`])", r"\\\\\1", pattern) for pattern in regex_patterns]
 
     # Add a summary table with search parameters
     output_lines.append("\n")
     output_lines.append("| Parameter       | Value |")
     output_lines.append("|-----------------|-------|")
-    output_lines.append(f"| Search Pattern  | `{escaped_regex_pattern}` |")
+    output_lines.append(f"| Search Patterns | `{', '.join(escaped_regex_patterns)}` |")
     output_lines.append(f"| Window Size     | {window_size} seconds |")
     output_lines.append(f"| Minimum Matches | {min_matches} |")
     output_lines.append(
@@ -172,6 +205,10 @@ def print_search_results_as_markdown(
     escaped_output_lines = [escape(line) for line in output_lines]
     markdown_output = "\n".join(escaped_output_lines)
     print(Markdown(markdown_output))
+
+    if output_file:
+        with open(output_file, "w") as f:
+            f.write(markdown_output)
 
 
 def main():
@@ -191,10 +228,11 @@ def main():
         "search", help="Search messages and print results as markdown."
     )
     search_parser.add_argument(
-        "regex_pattern",
-        metavar="REGEX_PATTERN",
+        "regex_patterns",
+        metavar="REGEX_PATTERNS",
         type=str,
-        help="Regex pattern to search for in messages.",
+        nargs="+",
+        help="List of regex patterns to search for in messages.",
     )
     search_parser.add_argument(
         "-o",
@@ -238,7 +276,10 @@ def main():
     if args.command == "search":
         print_search_results_as_markdown(
             db_config,
-            args.regex_pattern,
+            args.regex_patterns,
+            window_size=60,
+            min_matches=5,
+            timestamp_offset=-10,
             output_file=args.output_file,
             debug=args.debug,
         )
