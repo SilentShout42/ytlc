@@ -295,7 +295,7 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     # Query to fetch messages and metadata
     query = """
         SELECT
-            lc.timestamp_usec,
+            lc.timestamp,
             lc.video_id,
             lc.video_offset_time_msec,
             lc.message,
@@ -311,7 +311,7 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     df = pd.DataFrame(
         rows,
         columns=[
-            "timestamp_usec",
+            "timestamp",
             "video_id",
             "video_offset_time_msec",
             "message",
@@ -323,20 +323,17 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
     # Ensure video_offset_time_msec is an integer
     df["video_offset_time_msec"] = df["video_offset_time_msec"].fillna(0).astype(int)
 
-    # Convert timestamp_usec to datetime for easier processing
-    df["timestamp"] = pd.to_datetime(df["timestamp_usec"], unit="us")
-
     # Filter rows matching the regex pattern
     pattern = re.compile(regex_pattern)
     df["matches"] = df["message"].apply(lambda x: bool(pattern.search(x)))
     matching_df = df[df["matches"]]
 
-    # Group matching rows by video_id and sort by timestamp_usec
+    # Group matching rows by video_id and sort by timestamp
     grouped = matching_df.groupby("video_id", group_keys=False)
     results = []
 
     for video_id, group in grouped:
-        group = group.sort_values("timestamp_usec")
+        group = group.sort_values("timestamp")
         for i, match_row in group.iterrows():
             start_time = match_row["timestamp"]
             end_time = start_time + pd.Timedelta(seconds=window_size)
@@ -352,7 +349,7 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                     results[-1]["video_id"] != video_id
                     or (
                         match_row["timestamp"]
-                        - pd.to_datetime(results[-1]["timestamp_usec"], unit="us")
+                        - results[-1]["timestamp"]
                     ).total_seconds()
                     >= window_size
                 ):
@@ -360,22 +357,19 @@ def search_messages(db_config, regex_pattern, window_size=60, min_matches=5):
                     results.append(
                         {
                             "video_id": first_message["video_id"],
-                            "video_date": pd.to_datetime(
-                                first_message["timestamp_usec"], unit="us", utc=True
-                            ).date(),
+                            "video_date": first_message["timestamp"].date(),
                             "video_title": first_message["title"],
                             "video_offset_time_seconds": first_message[
                                 "video_offset_time_msec"
-                            ]
-                            // 1000,
-                            "timestamp_usec": first_message["timestamp_usec"],
+                            ] // 1000,
+                            "timestamp": first_message["timestamp"],
                             "message": first_message["message"],
                         }
                     )
 
     conn.close()
-    # Ensure results are sorted by timestamp_usec (oldest to newest) before returning
-    return sorted(results, key=lambda x: x["timestamp_usec"])
+    # Ensure results are sorted by timestamp (oldest to newest) before returning
+    return sorted(results, key=lambda x: x["timestamp"])
 
 
 def print_search_results_as_markdown(
