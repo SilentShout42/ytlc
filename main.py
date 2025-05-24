@@ -47,14 +47,14 @@ async def async_insert_messages_to_postgres(messages, db_config):
     """
     conn = psycopg2.connect(**db_config)
     cursor = conn.cursor()
+    cursor.execute("SET TIME ZONE 'UTC';")
 
     table_name = "live_chat"
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             message_id TEXT PRIMARY KEY,
-            timestamp_usec BIGINT,
-            timestamp_text TIMESTAMP,
+            timestamp TIMESTAMPTZ,
             video_id TEXT,
             author TEXT,
             author_channel_id TEXT,
@@ -83,11 +83,10 @@ async def async_insert_messages_to_postgres(messages, db_config):
         execute_values(
             cursor,
             f"""
-            INSERT INTO {table_name} (message_id, timestamp_usec, timestamp_text, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+            INSERT INTO {table_name} (message_id, timestamp, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
             VALUES %s
             ON CONFLICT (message_id) DO UPDATE SET
-                timestamp_usec = EXCLUDED.timestamp_usec,
-                timestamp_text = EXCLUDED.timestamp_text,
+                timestamp = EXCLUDED.timestamp,
                 video_id = EXCLUDED.video_id,
                 author = EXCLUDED.author,
                 author_channel_id = EXCLUDED.author_channel_id,
@@ -100,8 +99,7 @@ async def async_insert_messages_to_postgres(messages, db_config):
             [
                 (
                     message["message_id"],
-                    message["timestamp_usec"],
-                    pd.to_datetime(message["timestamp_usec"], unit="us", utc=True),
+                    message["timestamp"],
                     message["video_id"],
                     message["author"],
                     message["author_channel_id"],
@@ -157,7 +155,12 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                         # Extract message text (concatenate all runs)
                         runs = renderer.get("message", {}).get("runs", [])
                         msg = parse_message_runs(runs)
-                        timestamp_usec = int(renderer.get("timestampUsec", "0"))
+                        timestamp = pd.to_datetime(
+                            int(renderer.get("timestampUsec", 0)),
+                            unit="us",
+                            utc=True,
+                            origin="unix",
+                        )
                         author = renderer.get("authorName", {}).get("simpleText", "")
                         author_channel_id = renderer.get("authorExternalChannelId", "")
                         message_id = renderer.get("id", "")
@@ -192,7 +195,7 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                         buffer.append(
                             {
                                 "message_id": message_id,
-                                "timestamp_usec": timestamp_usec,
+                                "timestamp": timestamp,
                                 "video_id": video_id,
                                 "author": author,
                                 "author_channel_id": author_channel_id,
@@ -441,6 +444,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
     # Connect to PostgreSQL database
     conn = psycopg2.connect(**db_config)
     cursor = conn.cursor()
+    cursor.execute("SET TIME ZONE 'UTC';")
 
     # Create the video_metadata table if it doesn't exist
     cursor.execute(
@@ -450,7 +454,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
             title TEXT,
             channel_id TEXT,
             channel_name TEXT,
-            release_timestamp TIMESTAMP,
+            release_timestamp TIMESTAMPTZ,
             duration INTERVAL,
             was_live BOOLEAN
         )
@@ -465,18 +469,18 @@ async def parse_info_json_to_postgres(json_path, db_config):
             title = data.get("title", "")
             channel_id = data.get("channel_id", "")
             channel_name = data.get("channel", "")
-            timestamp = data.get("timestamp", None)
+            release_timestamp = pd.to_datetime(
+                int(data.get("release_timestamp", "0")),
+                unit="s",
+                utc=True,
+                origin="unix",
+            )
             duration = data.get("duration", None)
             if not duration:
                 duration_string = data.get("duration_string", None)
                 duration = parse_duration(duration_string)
 
             was_live = data.get("was_live", None)
-
-            # Convert timestamp to native PostgreSQL TIMESTAMP format in UTC
-            release_timestamp = None
-            if timestamp:
-                release_timestamp = pd.to_datetime(timestamp, unit="s", utc=True)
 
             # Insert metadata into the database
             cursor.execute(
