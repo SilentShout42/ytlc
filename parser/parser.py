@@ -39,16 +39,17 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
     Yields:
         list: A list of buffered messages.
     """
+    canonicalized_path = os.path.realpath(json_path)
     buffer = []
-    video_id = extract_video_id_from_filename(json_path)
+    video_id = extract_video_id_from_filename(canonicalized_path)
 
-    with open(json_path, "r", encoding="utf-8") as infile:
+    with open(canonicalized_path, "r", encoding="utf-8") as infile:
         for line in infile:
             try:
                 obj = orjson.loads(line)
                 replay_chat_item_action = obj.get("replayChatItemAction", {})
                 if not replay_chat_item_action:
-                    print(f"Skipping line without replayChatItemAction in {json_path}")
+                    print(f"Skipping line without replayChatItemAction in {canonicalized_path}")
                     continue
                 actions = replay_chat_item_action.get("actions", [])
                 for action in actions:
@@ -107,6 +108,7 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                                 "is_channel_owner": is_channel_owner,
                                 "video_offset_time_msec": video_offset_time_msec,
                                 "video_offset_time_text": video_offset_time_text,
+                                "canonicalized_path": canonicalized_path,
                             }
                         )
 
@@ -114,7 +116,7 @@ async def async_parse_live_chat_json_buffered(json_path, buffer_size=10000):
                             yield buffer
                             buffer = []
             except Exception as e:
-                print(f"Error processing line in {json_path}: {e}")
+                print(f"Error processing line in {canonicalized_path}: {e}")
                 pass  # Ignore errors for now
 
     if buffer:
@@ -172,8 +174,10 @@ async def process_files_to_postgres_async(file_paths, db_config, buffer_size=100
 async def parse_info_json_to_postgres(json_path, db_config):
     """
     Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
-    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration, was_live.
+    Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration, was_live, filename.
     """
+    canonicalized_path = os.path.realpath(json_path)
+
     # Connect to PostgreSQL database
     conn = psycopg2.connect(**db_config)
     cursor = conn.cursor()
@@ -190,7 +194,8 @@ async def parse_info_json_to_postgres(json_path, db_config):
             release_timestamp TIMESTAMPTZ,
             timestamp TIMESTAMPTZ,
             duration INTERVAL,
-            was_live BOOLEAN
+            was_live BOOLEAN,
+            filename TEXT
         )
         """
     )
@@ -210,7 +215,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
                 origin="unix",
             )
             timestamp = pd.to_datetime(
-                int(data.get("timestamp", "0")),
+                int(data["timestamp"]) if "timestamp" in data else None,
                 unit="s",
                 utc=True,
                 origin="unix",
@@ -225,8 +230,8 @@ async def parse_info_json_to_postgres(json_path, db_config):
             # Insert metadata into the database
             cursor.execute(
                 """
-                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, timestamp, duration, was_live)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO video_metadata (video_id, title, channel_id, channel_name, release_timestamp, timestamp, duration, was_live, filename)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (video_id) DO UPDATE SET
                     title = COALESCE(NULLIF(EXCLUDED.title, ''), video_metadata.title),
                     channel_id = COALESCE(NULLIF(EXCLUDED.channel_id, ''), video_metadata.channel_id),
@@ -234,7 +239,8 @@ async def parse_info_json_to_postgres(json_path, db_config):
                     release_timestamp = COALESCE(EXCLUDED.release_timestamp, video_metadata.release_timestamp),
                     timestamp = COALESCE(EXCLUDED.timestamp, video_metadata.timestamp),
                     duration = COALESCE(EXCLUDED.duration, video_metadata.duration),
-                    was_live = COALESCE(EXCLUDED.was_live, video_metadata.was_live)
+                    was_live = COALESCE(EXCLUDED.was_live, video_metadata.was_live),
+                    filename = COALESCE(EXCLUDED.filename, video_metadata.filename)
                 """,
                 (
                     video_id,
@@ -245,6 +251,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
                     timestamp,
                     pd.Timedelta(seconds=duration) if duration else None,
                     was_live,
+                    canonicalized_path,
                 ),
             )
     except Exception as e:
@@ -327,7 +334,8 @@ async def async_insert_messages_to_postgres(messages, db_config):
             is_moderator BOOLEAN,
             is_channel_owner BOOLEAN,
             video_offset_time_msec BIGINT,
-            video_offset_time_text TEXT
+            video_offset_time_text TEXT,
+            filename TEXT
         )
         """
     )
@@ -344,7 +352,7 @@ async def async_insert_messages_to_postgres(messages, db_config):
         execute_values(
             cursor,
             f"""
-            INSERT INTO {table_name} (message_id, timestamp, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text)
+            INSERT INTO {table_name} (message_id, timestamp, video_id, author, author_channel_id, message, is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text, filename)
             VALUES %s
             ON CONFLICT (message_id) DO UPDATE SET
                 timestamp = COALESCE(EXCLUDED.timestamp, live_chat.timestamp),
@@ -355,7 +363,8 @@ async def async_insert_messages_to_postgres(messages, db_config):
                 is_moderator = COALESCE(EXCLUDED.is_moderator, live_chat.is_moderator),
                 is_channel_owner = COALESCE(EXCLUDED.is_channel_owner, live_chat.is_channel_owner),
                 video_offset_time_msec = COALESCE(EXCLUDED.video_offset_time_msec, live_chat.video_offset_time_msec),
-                video_offset_time_text = COALESCE(NULLIF(EXCLUDED.video_offset_time_text, ''), live_chat.video_offset_time_text)
+                video_offset_time_text = COALESCE(NULLIF(EXCLUDED.video_offset_time_text, ''), live_chat.video_offset_time_text),
+                filename = COALESCE(NULLIF(EXCLUDED.filename, ''), live_chat.filename)
             """,
             [
                 (
@@ -369,6 +378,7 @@ async def async_insert_messages_to_postgres(messages, db_config):
                     message["is_channel_owner"],
                     message["video_offset_time_msec"],
                     message["video_offset_time_text"],
+                    message["canonicalized_path"],
                 )
                 for message in deduplicated_messages
             ],
