@@ -204,7 +204,7 @@ async def parse_info_json_to_postgres(json_path, db_config):
             channel_id = data.get("channel_id", "")
             channel_name = data.get("channel", "")
             release_timestamp = pd.to_datetime(
-                int(data.get("release_timestamp", "0")),
+                int(data["release_timestamp"]) if "release_timestamp" in data else None,
                 unit="s",
                 utc=True,
                 origin="unix",
