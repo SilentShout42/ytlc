@@ -94,6 +94,61 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
     return sorted(results, key=lambda x: x["timestamp"])
 
 
+def count_missing_video_days(db_config):
+    """
+    Counts the number of days missing from the video_metadata table since 2024-05-25,
+    exclusive of today. Returns the count and the list of missing dates.
+
+    Parameters:
+        db_config (dict): Database configuration for PostgreSQL connection.
+
+    Returns:
+        tuple: (int, list) The number of days missing video metadata and a list of missing dates.
+               Returns (-1, []) in case of an error.
+    """
+    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+
+    # Define the fixed earliest date to consider
+    effective_start_of_period = pd.Timestamp('2024-05-25').date()
+
+    # Calculate the date range, exclusive of today
+    today_date = pd.Timestamp.today().date()
+    # The period ends on yesterday
+    end_of_period = today_date - pd.Timedelta(days=1)
+
+    # Ensure end_of_period is not before effective_start_of_period
+    if end_of_period < effective_start_of_period:
+        print(f"The period ending yesterday ({end_of_period.strftime('%Y-%m-%d')}) is before the earliest allowed start date ({effective_start_of_period.strftime('%Y-%m-%d')}). No data to check.")
+        return 0, []
+
+    query = f"""
+        SELECT DISTINCT CAST(release_timestamp AS DATE) as video_date
+        FROM video_metadata
+        WHERE release_timestamp >= '{effective_start_of_period}' AND release_timestamp < '{today_date}';
+    """
+
+    try:
+        df = pd.read_sql_query(query, conn_str)
+    except Exception as e:
+        print(f"Error querying database: {e}")
+        return -1, []  # Indicate an error
+
+    # Generate all dates in the defined period for comparison
+    all_period_dates = set(
+        pd.date_range(effective_start_of_period, end_of_period, freq="D").date
+    )
+
+    if df.empty:
+        # If no videos found in the defined period, all days are considered missing
+        return len(all_period_dates), sorted(list(all_period_dates))
+
+    # Convert database dates to a set for efficient lookup
+    db_dates = set(pd.to_datetime(df["video_date"]).dt.date)
+
+    missing_dates = sorted(list(all_period_dates - db_dates))
+    return len(missing_dates), missing_dates
+
+
 def get_video_offsets(db_config):
     """
     Builds a dictionary of video_id to offsets based on the minimum timestamp difference
@@ -274,6 +329,12 @@ def main():
         help="Directory path containing live chat JSON files to parse.",
     )
 
+    # Missing days sub-command
+    missing_days_parser = subparsers.add_parser(
+        "missing_days", help="Count missing video metadata days since 2024-05-25."
+    )
+    # No arguments needed for missing_days anymore
+
     args = parser.parse_args()
 
     db_config = {
@@ -325,6 +386,25 @@ def main():
                     directory_path_live_chat_json, db_config, json_type="live_chat"
                 )
             )
+
+    elif args.command == "missing_days":
+        missing_count, missing_dates = count_missing_video_days(db_config)
+        if missing_count >= 0:
+            # Determine the actual start date used for the report
+            today_date_cli = pd.Timestamp.today().date()
+            end_of_period_cli = today_date_cli - pd.Timedelta(days=1)
+            effective_start_date_cli = pd.Timestamp('2024-05-25').date()
+
+            if end_of_period_cli < effective_start_date_cli:
+                 print(f"The period ending yesterday ({end_of_period_cli.strftime('%Y-%m-%d')}) is before the earliest allowed start date ({effective_start_date_cli.strftime('%Y-%m-%d')}). No data to check.")
+            else:
+                print(f"Found {missing_count} days missing video metadata in the period from {effective_start_date_cli.strftime('%Y-%m-%d')} to {end_of_period_cli.strftime('%Y-%m-%d')}.")
+                if missing_dates:
+                    print("Missing dates:")
+                    for date_obj in missing_dates:
+                        print(f"- {date_obj.strftime('%Y-%m-%d')}")
+        else:
+            print(f"Could not determine missing days due to an error.")
 
 
 if __name__ == "__main__":
