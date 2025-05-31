@@ -12,3 +12,5 @@ samples
 *.db
 *.db*
 *.csv
+
+!saved_queries/**
