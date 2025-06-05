@@ -50,6 +50,7 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
 
     # Use pandas to read directly from the database into a DataFrame
     df = pd.read_sql_query(query, conn_str)
+    total_lines_searched = len(df)
 
     # Ensure video_offset_time_seconds is an integer
     df["video_offset_time_seconds"] = (
@@ -91,7 +92,7 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
                     results.append(first_message)
 
     # Ensure results are sorted by timestamp (oldest to newest) before returning
-    return sorted(results, key=lambda x: x["timestamp"])
+    return sorted(results, key=lambda x: x["timestamp"]), total_lines_searched
 
 
 def count_missing_video_days(db_config):
@@ -204,7 +205,7 @@ def print_search_results_as_markdown(
         output_file (str): Path to the file to write results to.
         debug (bool): Whether to include Author and Message columns in the output.
     """
-    results = search_messages(db_config, regex_patterns, window_size, min_matches)
+    results, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
     # offsets = get_video_offsets(db_config)
 
     # Define headers as a list based on debug mode
@@ -262,6 +263,8 @@ def print_search_results_as_markdown(
     output_lines.append(f"| Search Patterns | `{', '.join(escaped_regex_patterns)}` |")
     output_lines.append(f"| Window Size     | {window_size} seconds |")
     output_lines.append(f"| Minimum Matches | {min_matches} |")
+    output_lines.append(f"| Results Found   | {len(results)} |")
+    output_lines.append(f"| Lines Searched  | {total_lines_searched} |")
     output_lines.append(
         f"| Generated At    | {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} |"
     )
