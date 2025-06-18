@@ -27,7 +27,9 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
         min_matches (int): Minimum number of matches required within a time window.
 
     Returns:
-        list: A list of dictionaries containing grouped search results.
+        tuple: (list, pd.Timestamp or None):
+            - A list of dictionaries containing grouped search results.
+            - The timestamp of the most recent message in the search scope (not just results), or None if no messages.
     """
     # Create a connection string for pandas
     conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
@@ -50,7 +52,9 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
 
     # Use pandas to read directly from the database into a DataFrame
     df = pd.read_sql_query(query, conn_str)
-    total_lines_searched = len(df)
+
+    # Find the most recent message timestamp in the search scope
+    latest_message_timestamp = df["timestamp"].max() if not df.empty else None
 
     # Ensure video_offset_time_seconds is an integer
     df["video_offset_time_seconds"] = (
@@ -92,7 +96,7 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
                     results.append(first_message)
 
     # Ensure results are sorted by timestamp (oldest to newest) before returning
-    return sorted(results, key=lambda x: x["timestamp"]), total_lines_searched
+    return sorted(results, key=lambda x: x["timestamp"]), latest_message_timestamp
 
 
 def count_missing_video_days(db_config):
@@ -205,7 +209,7 @@ def print_search_results_as_markdown(
         output_file (str): Path to the file to write results to.
         debug (bool): Whether to include Author and Message columns in the output.
     """
-    results, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
+    results, latest_message_timestamp = search_messages(db_config, regex_patterns, window_size, min_matches)
     # offsets = get_video_offsets(db_config)
 
     # Define headers as a list based on debug mode
@@ -260,11 +264,15 @@ def print_search_results_as_markdown(
     output_lines.append("\n")
     output_lines.append("| Parameter       | Value |")
     output_lines.append("|-----------------|-------|")
-    output_lines.append(f"| Search Patterns | `{', '.join(escaped_regex_patterns)}` |")
+    output_lines.append(f"| Search Patterns | `{' ,'.join(escaped_regex_patterns)}` |")
     output_lines.append(f"| Window Size     | {window_size} seconds |")
     output_lines.append(f"| Minimum Matches | {min_matches} |")
-    output_lines.append(f"| Results Found   | {len(results)} |")
-    output_lines.append(f"| Lines Searched  | {total_lines_searched} |")
+    # Add Latest Timestamp searched (from the full DataFrame, not just results)
+    if latest_message_timestamp is not None:
+        # Convert to UTC and format
+        latest_timestamp_utc = pd.Timestamp(latest_message_timestamp).tz_localize(None).tz_localize('UTC') if pd.Timestamp(latest_message_timestamp).tzinfo is None else pd.Timestamp(latest_message_timestamp).tz_convert('UTC')
+        latest_timestamp_str = latest_timestamp_utc.strftime('%Y-%m-%d %H:%M:%S %Z')
+        output_lines.append(f"| Latest Timestamp | {latest_timestamp_str} |")
     output_lines.append(
         f"| Generated At    | {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} |"
     )
