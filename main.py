@@ -27,7 +27,10 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
         min_matches (int): Minimum number of matches required within a time window.
 
     Returns:
-        list: A list of dictionaries containing grouped search results.
+        tuple: (list, pd.Timestamp or None, int):
+            - A list of dictionaries containing grouped search results.
+            - The timestamp of the most recent live chat message in the database, or None if no messages.
+            - The total number of lines searched (number of rows in the DataFrame).
     """
     # Create a connection string for pandas
     conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
@@ -51,6 +54,16 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
     # Use pandas to read directly from the database into a DataFrame
     df = pd.read_sql_query(query, conn_str)
     total_lines_searched = len(df)
+
+    # Query for the latest live chat message in the database
+    latest_live_chat_timestamp = None
+    try:
+        latest_chat_query = "SELECT MAX(timestamp) as latest_chat FROM live_chat;"
+        latest_chat_df = pd.read_sql_query(latest_chat_query, conn_str)
+        if not latest_chat_df.empty and pd.notnull(latest_chat_df.loc[0, 'latest_chat']):
+            latest_live_chat_timestamp = latest_chat_df.loc[0, 'latest_chat']
+    except Exception:
+        latest_live_chat_timestamp = None
 
     # Ensure video_offset_time_seconds is an integer
     df["video_offset_time_seconds"] = (
@@ -92,7 +105,7 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
                     results.append(first_message)
 
     # Ensure results are sorted by timestamp (oldest to newest) before returning
-    return sorted(results, key=lambda x: x["timestamp"]), total_lines_searched
+    return sorted(results, key=lambda x: x["timestamp"]), latest_live_chat_timestamp, total_lines_searched
 
 
 def count_missing_video_days(db_config):
@@ -205,7 +218,7 @@ def print_search_results_as_markdown(
         output_file (str): Path to the file to write results to.
         debug (bool): Whether to include Author and Message columns in the output.
     """
-    results, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
+    results, latest_live_chat_timestamp, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
     # offsets = get_video_offsets(db_config)
 
     # Define headers as a list based on debug mode
@@ -268,6 +281,12 @@ def print_search_results_as_markdown(
     output_lines.append(
         f"| Generated At    | {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} |"
     )
+
+    # Add Latest Live Chat (from the database, as UTC)
+    if latest_live_chat_timestamp is not None:
+        latest_chat_utc = pd.Timestamp(latest_live_chat_timestamp).tz_localize(None).tz_localize('UTC') if pd.Timestamp(latest_live_chat_timestamp).tzinfo is None else pd.Timestamp(latest_live_chat_timestamp).tz_convert('UTC')
+        latest_chat_str = latest_chat_utc.strftime('%Y-%m-%d %H:%M:%S %Z')
+        output_lines.append(f"| Latest Live Chat | {latest_chat_str} |")
 
     # Escape markdown output using rich's escape function
     escaped_output_lines = [escape(line) for line in output_lines]
