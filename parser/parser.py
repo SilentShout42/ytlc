@@ -286,7 +286,7 @@ async def parse_jsons_to_postgres(directory_path, db_config, json_type="live_cha
         return
 
     # Find all matching JSON files in the directory tree
-    json_files = glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)
+    json_files = list(set(glob.glob(f"{escaped_path}/{file_pattern}", recursive=True)) - set(glob.glob(f"{escaped_path}/**/livechat/**", recursive=True)))
 
     if json_type == "live_chat":
         await process_files_to_postgres_async(json_files, db_config)
