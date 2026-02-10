@@ -390,7 +390,8 @@ def plot_unique_chatters_over_time(
         SELECT
             video_id,
             author,
-            video_offset_time_msec
+            video_offset_time_msec,
+            message
         FROM live_chat
         WHERE video_id IN ({placeholders})
         ORDER BY video_id, video_offset_time_msec;
@@ -445,6 +446,14 @@ def plot_unique_chatters_over_time(
 
     ordered_video_ids = sorted(video_ids, key=video_sort_key)
 
+    def extract_emojis(text):
+        """Extract custom emoji names in the format :_Kanna*: from text."""
+        if not text:
+            return []
+        # Pattern to match custom emojis like :_KannaLove:, :_KannaHappy:, etc.
+        emoji_pattern = re.compile(r':_[^:]+:')
+        return emoji_pattern.findall(text)
+
     for video_id in ordered_video_ids:
         video_df = df[df['video_id'] == video_id].copy()
 
@@ -461,6 +470,7 @@ def plot_unique_chatters_over_time(
         unique_chatters_per_window = []
         messages_per_window = []
         window_labels = []
+        top_emojis = []
 
         for i in range(len(windows) - 1):
             window_start = windows[i]
@@ -478,6 +488,20 @@ def plot_unique_chatters_over_time(
             unique_chatters_per_window.append(unique_count)
             messages_per_window.append(message_count)
 
+            # Extract and count emojis
+            all_emojis = []
+            for msg in window_messages['message'].dropna():
+                all_emojis.extend(extract_emojis(str(msg)))
+
+            # Find most common emoji
+            if all_emojis:
+                from collections import Counter
+                emoji_counts = Counter(all_emojis)
+                most_common_emoji = emoji_counts.most_common(1)[0][0]
+                top_emojis.append(most_common_emoji)
+            else:
+                top_emojis.append('')
+
             # Create label for this window (e.g., "0:00-5:00")
             start_hms = pd.to_datetime(window_start, unit='s').strftime('%H:%M:%S')
             end_hms = pd.to_datetime(window_end, unit='s').strftime('%H:%M:%S')
@@ -493,6 +517,7 @@ def plot_unique_chatters_over_time(
             'counts': unique_chatters_per_window,
             'messages': messages_per_window,
             'labels': window_labels,
+            'top_emojis': top_emojis,
             'max_offset': max_offset_sec,
             'title': video_titles.get(video_id, 'Unknown Title'),
             'date': date_label,
@@ -569,7 +594,8 @@ def plot_unique_chatters_over_time(
             chatters=result['counts'],
             messages=result['messages'],
             scaled_messages=scaled_messages,
-            url=urls
+            url=urls,
+            top_emoji=result['top_emojis']
         ))
 
         # Add bars for unique chatters
@@ -587,6 +613,20 @@ def plot_unique_chatters_over_time(
             nonselection_line_alpha=1.0,
             nonselection_line_color='black',
         )
+
+        # Add emoji labels at the top of each bar
+        from bokeh.models import LabelSet
+        labels = LabelSet(
+            x='x',
+            y='chatters',
+            text='top_emoji',
+            source=source,
+            text_align='center',
+            text_baseline='bottom',
+            text_font_size='14pt',
+            y_offset=3
+        )
+        p.add_layout(labels)
 
         # Add line for messages (scaled to fit with bars)
         line = p.line(
