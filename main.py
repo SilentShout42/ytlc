@@ -587,6 +587,18 @@ def plot_unique_chatters_over_time(
             timestamp_seconds = h * 3600 + m * 60 + s
             urls.append(f"{result['url']}&t={timestamp_seconds}s")
 
+        # Convert emoji names to image URLs
+        emoji_image_urls = []
+        for emoji in result['top_emojis']:
+            if emoji:
+                # Remove colons and add .png extension
+                emoji_filename = emoji.strip(':') + '.png'
+                # Use relative path to img directory
+                emoji_image_urls.append(f"img/{emoji_filename}")
+            else:
+                # Empty string for no emoji
+                emoji_image_urls.append('')
+
         # Unified data source with all information
         source = ColumnDataSource(data=dict(
             x=x_indices,
@@ -595,7 +607,8 @@ def plot_unique_chatters_over_time(
             messages=result['messages'],
             scaled_messages=scaled_messages,
             url=urls,
-            top_emoji=result['top_emojis']
+            top_emoji=result['top_emojis'],
+            emoji_image_url=emoji_image_urls
         ))
 
         # Add bars for unique chatters
@@ -614,19 +627,21 @@ def plot_unique_chatters_over_time(
             nonselection_line_color='black',
         )
 
-        # Add emoji labels at the top of each bar
-        from bokeh.models import LabelSet
-        labels = LabelSet(
-            x='x',
-            y='chatters',
-            text='top_emoji',
-            source=source,
-            text_align='center',
-            text_baseline='bottom',
-            text_font_size='14pt',
-            y_offset=3
-        )
-        p.add_layout(labels)
+        # Add emoji images at the top of each bar
+        from bokeh.models import ImageURL
+        # Only add images where we have valid URLs
+        for i, (x_pos, y_pos, img_url) in enumerate(zip(x_indices, result['counts'], emoji_image_urls)):
+            if img_url:
+                p.image_url(
+                    url=[img_url],
+                    x=[x_pos],
+                    y=[y_pos + 3],  # Offset above the bar
+                    w=24,  # Width in screen units
+                    h=24,  # Height in screen units
+                    anchor='center',
+                    w_units='screen',
+                    h_units='screen'
+                )
 
         # Add line for messages (scaled to fit with bars)
         line = p.line(
