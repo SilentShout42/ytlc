@@ -13,4 +13,8 @@ samples
 *.db*
 *.csv
 
+# Environment variables and credentials
+.env
+.envrc
+
 !saved_queries/**

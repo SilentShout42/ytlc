@@ -2,7 +2,6 @@ import json
 import os
 import pandas as pd
 import re
-import asyncio
 import argparse
 from rich.markdown import Markdown
 from rich.console import Console
@@ -390,10 +389,8 @@ def main():
                     f"Directory for --info not found at {directory_path_info}"
                 )
             print(f"Parsing info JSON files from: {directory_path_info}")
-            asyncio.run(
-                parse_jsons_to_postgres(
-                    directory_path_info, db_config, json_type="info"
-                )
+            parse_jsons_to_postgres(
+                directory_path_info, db_config, json_type="info"
             )
 
         if args.live_chat_json:
@@ -403,10 +400,8 @@ def main():
                     f"Directory for --live-chat not found at {directory_path_live_chat_json}"
                 )
             print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            asyncio.run(
-                parse_jsons_to_postgres(
-                    directory_path_live_chat_json, db_config, json_type="live_chat"
-                )
+            parse_jsons_to_postgres(
+                directory_path_live_chat_json, db_config, json_type="live_chat"
             )
 
     elif args.command == "missing_days":
