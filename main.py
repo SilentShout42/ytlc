@@ -559,6 +559,7 @@ def plot_unique_chatters_over_time(
             y_axis_label="Unique Chatters",
             toolbar_location="above",
             tools="pan,wheel_zoom,box_zoom,reset,save",
+            output_backend="svg",
         )
 
         # Configure x-axis
