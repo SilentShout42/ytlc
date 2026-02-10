@@ -339,21 +339,27 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
         print("[yellow]No chat messages found for the specified video IDs.[/yellow]")
         return
 
-    # Query to fetch video metadata (titles)
+    # Query to fetch video metadata (titles and dates)
     metadata_query = f"""
         SELECT
             video_id,
-            title
+            title,
+            COALESCE(release_timestamp, timestamp) AS release_timestamp
         FROM video_metadata
         WHERE video_id IN ({placeholders});
     """
 
     try:
         metadata_df = pd.read_sql_query(metadata_query, conn_str)
+        metadata_df['video_date'] = (
+            pd.to_datetime(metadata_df['release_timestamp'], utc=True).dt.date
+        )
         video_titles = dict(zip(metadata_df['video_id'], metadata_df['title']))
+        video_dates = dict(zip(metadata_df['video_id'], metadata_df['video_date']))
     except Exception as e:
         print(f"[yellow]Warning: Could not fetch video titles: {e}[/yellow]")
         video_titles = {}
+        video_dates = {}
 
     # Convert video_offset_time_msec to seconds
     df['video_offset_time_sec'] = df['video_offset_time_msec'] / 1000
@@ -403,7 +409,9 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             'counts': unique_chatters_per_window,
             'labels': window_labels,
             'max_offset': max_offset_sec,
-            'title': video_titles.get(video_id, 'Unknown Title')
+            'title': video_titles.get(video_id, 'Unknown Title'),
+            'date': video_dates.get(video_id, 'Unknown Date'),
+            'url': f"https://www.youtube.com/watch?v={video_id}",
         }
 
     # Create interactive plot using Plotly
@@ -428,7 +436,10 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
 
         fig.update_layout(
             title=dict(
-                text=f"{result['title']}<br><sub>{video_id}</sub>",
+                text=(
+                    f"<a href='{result['url']}' target='_blank'>{result['title']}</a>"
+                    f"<br><sub>{result['date']} | {video_id}</sub>"
+                ),
                 font=dict(size=16)
             ),
             xaxis_title=f'Time Window ({window_size_minutes} min intervals)',
@@ -442,9 +453,16 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
     else:
         # Multiple videos: create subplots
         fig = make_subplots(
-            rows=num_videos, cols=1,
-            subplot_titles=[f"{result['title']}<br>{video_id}" for video_id, result in results_per_video.items()],
-            specs=[[{"secondary_y": False}] for _ in range(num_videos)]
+            rows=num_videos,
+            cols=1,
+            subplot_titles=[
+                (
+                    f"<a href='{result['url']}' target='_blank'>{result['title']}</a>"
+                    f"<br>{result['date']} | {video_id}"
+                )
+                for video_id, result in results_per_video.items()
+            ],
+            specs=[[{"secondary_y": False}] for _ in range(num_videos)],
         )
 
         for idx, (video_id, result) in enumerate(results_per_video.items(), start=1):
