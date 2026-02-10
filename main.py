@@ -628,12 +628,12 @@ def plot_unique_chatters_over_time(
             top='chatters',
             width=0.8,
             source=source,
-            color='steelblue',
+            color='#2E7D32',  # Forest green from image
             line_color='black',
             line_width=1.5,
             legend_label='Unique Chatters',
             nonselection_fill_alpha=1.0,
-            nonselection_fill_color='steelblue',
+            nonselection_fill_color='#2E7D32',
             nonselection_line_alpha=1.0,
             nonselection_line_color='black',
         )
@@ -657,10 +657,10 @@ def plot_unique_chatters_over_time(
             'scaled_messages',
             source=source,
             line_width=2,
-            color='darkorange',
+            color='#FFD700',  # Golden yellow from image
             legend_label='Messages',
             nonselection_line_alpha=1.0,
-            nonselection_line_color='darkorange',
+            nonselection_line_color='#FFD700',
         )
 
         # Add circle markers on the line
@@ -669,10 +669,10 @@ def plot_unique_chatters_over_time(
             'scaled_messages',
             source=source,
             size=6,
-            color='darkorange',
+            color='#FFD700',  # Golden yellow from image
             marker='circle',
             nonselection_fill_alpha=1.0,
-            nonselection_fill_color='darkorange',
+            nonselection_fill_color='#FFD700',
             nonselection_line_alpha=1.0,
         )
 
