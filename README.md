@@ -7,7 +7,6 @@ A tool for parsing and analyzing YouTube live chat data from archived streams.
 - Parse YouTube live chat JSON files and video metadata
 - Store chat messages in PostgreSQL database
 - Search chat messages with regex patterns
-- Generate interactive visualizations of chat activity over time
 - Track unique chatters and message counts in time windows
 
 ## Prerequisites
@@ -43,12 +42,12 @@ docker compose ps
 ```
 
 The database will automatically:
-- Create the `ytlc` database
+- Create the `ytlc` database and
 - Create the `ytlc` user with the generated password
 - Initialize the database schema (tables and indexes)
 - Persist data in a Docker volume
 
-### 2. Load environment variables
+### 3. Load environment variables
 
 You have two options to load the PostgreSQL connection variables from `.envrc`:
 
@@ -71,13 +70,13 @@ cd ..  # Leave the directory
 cd ytlc  # Enter again - environment is automatically loaded
 ```
 
-### 2. Install Python dependencies
+### 4. Install Python dependencies
 
 ```bash
 uv sync
 ```
 
-### 3. Parse YouTube data
+### 5. Parse YouTube data
 
 Place your YouTube live chat JSON files in a directory, then parse them:
 
@@ -89,20 +88,11 @@ uv run main.py parse --info-json /path/to/info/json/files
 uv run main.py parse --live-chat-json /path/to/chat/json/files
 ```
 
-### 4. Analyze the data
+### 6. Analyze the data
 
 ```bash
 # Search for messages matching a pattern
 uv run main.py search "pattern1" "pattern2"
-
-# Generate interactive plots of chat activity
-uv run main.py plot --last-n 5 -o output.html
-
-# Plot specific videos by ID
-uv run main.py plot VIDEO_ID1 VIDEO_ID2 -o output.html
-
-# Plot videos within a date range
-uv run main.py plot --start-date 2026-01-01 --end-date 2026-01-31 -o output.html
 ```
 
 ## Commands
@@ -131,22 +121,6 @@ Options:
 - `REGEX_PATTERN`: One or more regex patterns to search for
 - `-o, --output-file`: File to write results to
 - `--debug`: Include Author and Message columns in output
-
-### `plot`
-
-Create interactive histograms of unique chatters over stream duration.
-
-```bash
-uv run main.py plot [VIDEO_ID ...] [-w MINUTES] [-o OUTPUT_FILE] [--last-n COUNT] [--start-date DATE] [--end-date DATE]
-```
-
-Options:
-- `VIDEO_ID`: Specific video IDs to plot (optional)
-- `-w, --window-size MINUTES`: Time window size in minutes (default: 5)
-- `-o, --output-file`: File to save the plot (HTML format)
-- `--last-n COUNT`: Plot the most recent N VODs
-- `--start-date YYYY-MM-DD`: Filter VODs from this date (inclusive)
-- `--end-date YYYY-MM-DD`: Filter VODs up to this date (inclusive)
 
 ### `missing_days`
 
