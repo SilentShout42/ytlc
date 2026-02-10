@@ -599,6 +599,17 @@ def plot_unique_chatters_over_time(
                 # Empty string for no emoji
                 emoji_image_urls.append('')
 
+        # Calculate emoji size in screen pixels to maintain square aspect ratio
+        # Bar width is 0.8 data units, plot is 1200 pixels wide
+        bar_width_pixels = int((0.8 / num_windows) * 1200)
+        # Use at least 20 pixels, max 60 pixels for emoji
+        emoji_size_pixels = max(20, min(60, bar_width_pixels))
+
+        # Calculate emoji y positions (center of image above each bar) in data coordinates
+        max_chatters = max(result['counts']) if result['counts'] else 1
+        emoji_y_offset = max_chatters * 0.08
+        emoji_y_positions = [c + emoji_y_offset for c in result['counts']]
+
         # Unified data source with all information
         source = ColumnDataSource(data=dict(
             x=x_indices,
@@ -608,7 +619,8 @@ def plot_unique_chatters_over_time(
             scaled_messages=scaled_messages,
             url=urls,
             top_emoji=result['top_emojis'],
-            emoji_image_url=emoji_image_urls
+            emoji_image_url=emoji_image_urls,
+            emoji_y=emoji_y_positions
         ))
 
         # Add bars for unique chatters
@@ -627,21 +639,18 @@ def plot_unique_chatters_over_time(
             nonselection_line_color='black',
         )
 
-        # Add emoji images at the top of each bar
-        from bokeh.models import ImageURL
-        # Only add images where we have valid URLs
-        for i, (x_pos, y_pos, img_url) in enumerate(zip(x_indices, result['counts'], emoji_image_urls)):
-            if img_url:
-                p.image_url(
-                    url=[img_url],
-                    x=[x_pos],
-                    y=[y_pos + 3],  # Offset above the bar
-                    w=24,  # Width in screen units
-                    h=24,  # Height in screen units
-                    anchor='center',
-                    w_units='screen',
-                    h_units='screen'
-                )
+        # Add emoji images at fixed square size in screen pixels
+        p.image_url(
+            url='emoji_image_url',
+            x='x',
+            y='emoji_y',
+            w=emoji_size_pixels,
+            h=emoji_size_pixels,
+            source=source,
+            anchor='center',
+            w_units='screen',  # Fixed screen pixels
+            h_units='screen'   # Fixed screen pixels - maintains perfect square
+        )
 
         # Add line for messages (scaled to fit with bars)
         line = p.line(
