@@ -14,3 +14,4 @@ samples
 *.csv
 
 !saved_queries/**
+*.html

@@ -9,6 +9,9 @@ from rich.console import Console
 from rich.markup import escape
 from rich import print
 from math import ceil
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -298,6 +301,190 @@ def print_search_results_as_markdown(
             f.write(markdown_output)
 
 
+def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, output_file=None):
+    """
+    Creates an interactive histogram showing the count of unique chatters over the length of the stream
+    in 5-minute windows. Uses Plotly for better emoji and text rendering support.
+
+    Parameters:
+        db_config (dict): Database configuration for PostgreSQL connection.
+        video_ids (list): List of video IDs to analyze.
+        window_size_minutes (int): Size of time windows in minutes.
+        output_file (str): Path to save the plot image (HTML format). If None, opens in browser.
+    """
+    # Create a connection string for pandas
+    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+
+    # Build the placeholders and parameters for the SQL query
+    placeholders = ",".join([f"'{vid}'" for vid in video_ids])
+
+    # Query to fetch messages for the given video IDs
+    query = f"""
+        SELECT
+            video_id,
+            author,
+            video_offset_time_msec
+        FROM live_chat
+        WHERE video_id IN ({placeholders})
+        ORDER BY video_id, video_offset_time_msec;
+    """
+
+    try:
+        df = pd.read_sql_query(query, conn_str)
+    except Exception as e:
+        print(f"[red]Error querying database: {e}[/red]")
+        return
+
+    if df.empty:
+        print("[yellow]No chat messages found for the specified video IDs.[/yellow]")
+        return
+
+    # Query to fetch video metadata (titles)
+    metadata_query = f"""
+        SELECT
+            video_id,
+            title
+        FROM video_metadata
+        WHERE video_id IN ({placeholders});
+    """
+
+    try:
+        metadata_df = pd.read_sql_query(metadata_query, conn_str)
+        video_titles = dict(zip(metadata_df['video_id'], metadata_df['title']))
+    except Exception as e:
+        print(f"[yellow]Warning: Could not fetch video titles: {e}[/yellow]")
+        video_titles = {}
+
+    # Convert video_offset_time_msec to seconds
+    df['video_offset_time_sec'] = df['video_offset_time_msec'] / 1000
+
+    # Convert window size from minutes to seconds
+    window_size_seconds = window_size_minutes * 60
+
+    # Group by video_id and process each video separately
+    results_per_video = {}
+
+    for video_id in video_ids:
+        video_df = df[df['video_id'] == video_id].copy()
+
+        if video_df.empty:
+            continue
+
+        # Determine the maximum offset time (stream length)
+        max_offset_sec = video_df['video_offset_time_sec'].max()
+
+        # Create windows
+        windows = np.arange(0, max_offset_sec + window_size_seconds, window_size_seconds)
+
+        # Count unique chatters in each window
+        unique_chatters_per_window = []
+        window_labels = []
+
+        for i in range(len(windows) - 1):
+            window_start = windows[i]
+            window_end = windows[i + 1]
+
+            # Filter messages in this window
+            window_messages = video_df[
+                (video_df['video_offset_time_sec'] >= window_start) &
+                (video_df['video_offset_time_sec'] < window_end)
+            ]
+
+            # Count unique authors
+            unique_count = window_messages['author'].nunique()
+            unique_chatters_per_window.append(unique_count)
+
+            # Create label for this window (e.g., "0:00-5:00")
+            start_hms = pd.to_datetime(window_start, unit='s').strftime('%H:%M:%S')
+            end_hms = pd.to_datetime(window_end, unit='s').strftime('%H:%M:%S')
+            window_labels.append(f"{start_hms}-{end_hms}")
+
+        results_per_video[video_id] = {
+            'counts': unique_chatters_per_window,
+            'labels': window_labels,
+            'max_offset': max_offset_sec,
+            'title': video_titles.get(video_id, 'Unknown Title')
+        }
+
+    # Create interactive plot using Plotly
+    num_videos = len(results_per_video)
+
+    if num_videos == 0:
+        print("[yellow]No chat messages found for the specified video IDs.[/yellow]")
+        return
+    elif num_videos == 1:
+        # Single video: create a single histogram
+        video_id = list(results_per_video.keys())[0]
+        result = results_per_video[video_id]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=result['labels'],
+            y=result['counts'],
+            marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
+            hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
+            showlegend=False
+        ))
+
+        fig.update_layout(
+            title=dict(
+                text=f"{result['title']}<br><sub>{video_id}</sub>",
+                font=dict(size=16)
+            ),
+            xaxis_title=f'Time Window ({window_size_minutes} min intervals)',
+            yaxis_title='Unique Chatters',
+            hovermode='x unified',
+            template='plotly_white',
+            height=600,
+            xaxis=dict(tickangle=-45),
+            margin=dict(b=120)
+        )
+    else:
+        # Multiple videos: create subplots
+        fig = make_subplots(
+            rows=num_videos, cols=1,
+            subplot_titles=[f"{result['title']}<br>{video_id}" for video_id, result in results_per_video.items()],
+            specs=[[{"secondary_y": False}] for _ in range(num_videos)]
+        )
+
+        for idx, (video_id, result) in enumerate(results_per_video.items(), start=1):
+            fig.add_trace(
+                go.Bar(
+                    x=result['labels'],
+                    y=result['counts'],
+                    marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
+                    hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
+                    showlegend=False,
+                    name=video_id
+                ),
+                row=idx, col=1
+            )
+
+            fig.update_xaxes(title_text=f'Time Window ({window_size_minutes} min intervals)', row=idx, col=1, tickangle=-45)
+            fig.update_yaxes(title_text='Unique Chatters', row=idx, col=1)
+
+        fig.update_layout(
+            height=500 * num_videos,
+            showlegend=False,
+            template='plotly_white',
+            hovermode='x unified',
+            margin=dict(b=120)
+        )
+
+    # Save or show the plot
+    if output_file:
+        # Ensure HTML extension
+        if not output_file.endswith('.html'):
+            output_file = output_file.replace('.png', '.html')
+            if not output_file.endswith('.html'):
+                output_file += '.html'
+        fig.write_html(output_file)
+        print(f"[green]Interactive plot saved to: {output_file}[/green]")
+    else:
+        fig.show()
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process YouTube data. Allows parsing JSON files or searching messages."
@@ -356,6 +543,33 @@ def main():
         "missing_days", help="Count missing video metadata days since 2024-05-25."
     )
     # No arguments needed for missing_days anymore
+
+    # Plot sub-command
+    plot_parser = subparsers.add_parser(
+        "plot", help="Create a histogram of unique chatters over stream duration."
+    )
+    plot_parser.add_argument(
+        "video_ids",
+        metavar="VIDEO_ID",
+        type=str,
+        nargs="+",
+        help="List of video IDs to analyze.",
+    )
+    plot_parser.add_argument(
+        "-w",
+        "--window-size",
+        metavar="MINUTES",
+        type=int,
+        default=5,
+        help="Window size in minutes (default: 5).",
+    )
+    plot_parser.add_argument(
+        "-o",
+        "--output-file",
+        metavar="OUTPUT_FILE",
+        type=str,
+        help="File to save the interactive plot to (HTML format).",
+    )
 
     args = parser.parse_args()
 
@@ -427,6 +641,14 @@ def main():
                         print(f"- {date_obj.strftime('%Y-%m-%d')}")
         else:
             print(f"Could not determine missing days due to an error.")
+
+    elif args.command == "plot":
+        plot_unique_chatters_over_time(
+            db_config,
+            args.video_ids,
+            window_size_minutes=args.window_size,
+            output_file=args.output_file,
+        )
 
 
 if __name__ == "__main__":
