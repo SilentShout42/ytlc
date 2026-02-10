@@ -305,7 +305,6 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
     """
     Creates an interactive histogram showing the count of unique chatters over the length of the stream
     in 5-minute windows. Uses Plotly for better emoji and text rendering support.
-    Bars are clickable and link to YouTube videos at the corresponding time.
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
@@ -380,7 +379,6 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
         # Count unique chatters in each window
         unique_chatters_per_window = []
         window_labels = []
-        youtube_urls = []
 
         for i in range(len(windows) - 1):
             window_start = windows[i]
@@ -401,16 +399,11 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             end_hms = pd.to_datetime(window_end, unit='s').strftime('%H:%M:%S')
             window_labels.append(f"{start_hms}-{end_hms}")
 
-            # Create YouTube URL for this window's start time
-            youtube_url = f"https://www.youtube.com/watch?v={video_id}&t={int(window_start)}s"
-            youtube_urls.append(youtube_url)
-
         results_per_video[video_id] = {
             'counts': unique_chatters_per_window,
             'labels': window_labels,
             'max_offset': max_offset_sec,
-            'title': video_titles.get(video_id, 'Unknown Title'),
-            'urls': youtube_urls
+            'title': video_titles.get(video_id, 'Unknown Title')
         }
 
     # Create interactive plot using Plotly
@@ -428,9 +421,8 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
         fig.add_trace(go.Bar(
             x=result['labels'],
             y=result['counts'],
-            customdata=result['urls'],
             marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
-            hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<br><i>Click to open YouTube at this time</i><extra></extra>',
+            hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
             showlegend=False
         ))
 
@@ -460,9 +452,8 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
                 go.Bar(
                     x=result['labels'],
                     y=result['counts'],
-                    customdata=result['urls'],
                     marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
-                    hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<br><i>Click to open YouTube at this time</i><extra></extra>',
+                    hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
                     showlegend=False,
                     name=video_id
                 ),
@@ -487,35 +478,8 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             output_file = output_file.replace('.png', '.html')
             if not output_file.endswith('.html'):
                 output_file += '.html'
-
-        # Write HTML with custom JavaScript for click handling
         fig.write_html(output_file)
-
-        # Read the generated HTML and inject click handler
-        with open(output_file, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-
-        # Inject JavaScript for bar clicks
-        click_handler_js = """
-        <script>
-        var plotDiv = document.querySelector('.plotly-graph-div');
-        plotDiv.on('plotly_click', function(data){
-            var point = data.points[0];
-            if(point.customdata) {
-                window.open(point.customdata, '_blank');
-            }
-        });
-        </script>
-        """
-
-        # Insert before closing body tag
-        html_content = html_content.replace('</body>', click_handler_js + '</body>')
-
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-
         print(f"[green]Interactive plot saved to: {output_file}[/green]")
-        print(f"[cyan]Click on bars to open YouTube video at that timestamp[/cyan]")
     else:
         fig.show()
 
