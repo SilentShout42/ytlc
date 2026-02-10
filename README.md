@@ -246,18 +246,45 @@ ytlc/
 ### Getting the `info.json` and `live_chat.json` dataset
 
 Options explanation:
-* `-t sleep -r 10M` adds some delays between API calls and rate limits downloads to 10 MBs/
+* `--rate-limit 10M` adds rate limiting to 10 MB/s
 * `--no-download` skips download of audio/video
 * `--no-wait --no-ignore-no-formats-error` stops yt-dlp from waiting for an upcoming live stream or erroring out on a pre-live video.
 * `--no-overwrite` prevents yt-dlp from overwriting existing live chat or video metadata files. This way you can re-run these commands as-is without re-downloading content. Consider using the `--download-archive` option if you want to save even more time for repeated runs (at the cost of some statefulness.)
 
+Get a list of all vods for use in subsequent commands - adjust the URL to match the channel you're working with
+
 ```shell
-# Get a list of all vods - replace with the @Channel/streams URL you're working with
-yt-dlp -j --flat-playlist 'https://www.youtube.com/@KannaYanagi/streams' | jq -r 'select(.was_live==true) | .url' | tee all.txt
+yt-dlp \
+  --dump-json \
+  --flat-playlist \
+  'https://www.youtube.com/@KannaYanagi/streams' | \
+  jq -r 'select(.was_live==true) | .url' | \
+  tee all.txt
+```
 
-# Fetch live chat transcripts (live_chat.json)
- yt-dlp -t sleep -r 10M --no-download --no-wait --no-ignore-no-formats-error --write-subs --sub-lang live_chat --no-overwrite --batch all.txt
+Fetch live chat transcripts (live_chat.json)
+```shell
+yt-dlp \
+  -t sleep \
+  --rate-lmit 10M \
+  --no-download \
+  --no-wait \
+  --no-ignore-no-formats-error \
+  --write-subs \
+  --sub-langs live_chat \
+  --no-overwrite \
+  --batch-file all.txt
+```
 
-# Fetch video metadata (info.json)
-yt-dlp -t sleep -r 10M --no-download --no-wait --no-ignore-no-formats-error --write-info-json --no-overwrite --batch all.txt
+Fetch video metadata (info.json)
+```shell
+yt-dlp \
+  -t sleep \
+  --rate-lmit 10M \
+  --no-download \
+  --no-wait \
+  --no-ignore-no-formats-error \
+  --write-info-json \
+  --no-overwrite \
+  --batch-file all.txt
 ```

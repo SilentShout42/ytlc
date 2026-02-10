@@ -87,7 +87,14 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
         """
         df = pd.read_sql_query(query_fallback, conn_str)
 
-    total_lines_searched = len(df)
+    # Query for the total number of messages in the database (what was actually searched)
+    try:
+        total_lines_query = "SELECT COUNT(*) as total_count FROM live_chat;"
+        total_lines_df = pd.read_sql_query(total_lines_query, conn_str)
+        total_lines_searched = int(total_lines_df.loc[0, 'total_count']) if not total_lines_df.empty else len(df)
+    except Exception:
+        # Fallback to the length of the dataframe
+        total_lines_searched = len(df)
 
     # Query for the latest live chat message in the database
     latest_live_chat_timestamp = None
