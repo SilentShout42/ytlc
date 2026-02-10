@@ -606,9 +606,8 @@ def plot_unique_chatters_over_time(
         emoji_size_pixels = max(20, min(60, bar_width_pixels))
 
         # Calculate emoji y positions (center of image above each bar) in data coordinates
-        max_chatters = max(result['counts']) if result['counts'] else 1
-        emoji_y_offset = max_chatters * 0.08
-        emoji_y_positions = [c + emoji_y_offset for c in result['counts']]
+        # Position emoji right on top of bars (at bar height)
+        emoji_y_positions = result['counts']
 
         # Unified data source with all information
         source = ColumnDataSource(data=dict(
@@ -647,7 +646,7 @@ def plot_unique_chatters_over_time(
             w=emoji_size_pixels,
             h=emoji_size_pixels,
             source=source,
-            anchor='center',
+            anchor='bottom',  # Anchor at bottom so emoji sits right on top of bar
             w_units='screen',  # Fixed screen pixels
             h_units='screen'   # Fixed screen pixels - maintains perfect square
         )
