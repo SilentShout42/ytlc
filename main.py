@@ -567,7 +567,7 @@ def plot_unique_chatters_over_time(
         p.xaxis.major_label_orientation = 0.785  # 45 degrees in radians
 
         # Create unified data source with all information
-        from bokeh.models import ColumnDataSource, LinearAxis, TapTool, OpenURL
+        from bokeh.models import ColumnDataSource, LinearAxis, TapTool
 
         # Set up the secondary y-axis for messages
         max_chatters = max(result['counts']) if result['counts'] else 1
@@ -636,6 +636,10 @@ def plot_unique_chatters_over_time(
             nonselection_fill_color='#2E7D32',
             nonselection_line_alpha=1.0,
             nonselection_line_color='black',
+            selection_fill_alpha=1.0,  # Keep selected bars same opacity
+            selection_fill_color='#2E7D32',
+            selection_line_alpha=1.0,
+            selection_line_color='black',
         )
 
         # Add emoji images at fixed square size in screen pixels
@@ -661,6 +665,8 @@ def plot_unique_chatters_over_time(
             legend_label='Messages',
             nonselection_line_alpha=1.0,
             nonselection_line_color='#FFD700',
+            selection_line_alpha=1.0,  # Keep selected line same opacity
+            selection_line_color='#FFD700',
         )
 
         # Add circle markers on the line
@@ -674,6 +680,9 @@ def plot_unique_chatters_over_time(
             nonselection_fill_alpha=1.0,
             nonselection_fill_color='#FFD700',
             nonselection_line_alpha=1.0,
+            selection_fill_alpha=1.0,  # Keep selected circles same opacity
+            selection_fill_color='#FFD700',
+            selection_line_alpha=1.0,
         )
 
         # Add secondary y-axis label using extra_y_ranges
@@ -693,12 +702,20 @@ def plot_unique_chatters_over_time(
 
         p.add_tools(hover)
 
-        # Add tap tool to make bars clickable (opens YouTube video at timestamp)
+        # Add tap tool with CustomJS to open URLs without affecting selection state
+        from bokeh.models import CustomJS
         tap_tool = TapTool()
+        tap_tool.callback = CustomJS(args=dict(source=source), code="""
+            const data = source.data;
+            const index = source.selected.indices[0];
+            if (index !== undefined) {
+                const url = data['url'][index];
+                window.open(url, '_blank');
+                // Clear selection to prevent visual artifacts
+                source.selected.indices = [];
+            }
+        """)
         p.add_tools(tap_tool)
-
-        url_callback = OpenURL(url="@url")
-        tap_tool.callback = url_callback
 
         # Configure legend
         p.legend.location = "top_right"
