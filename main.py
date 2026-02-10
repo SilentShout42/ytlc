@@ -338,23 +338,11 @@ def main():
         "parse", help="Parse JSON files and load into PostgreSQL."
     )
     parse_parser.add_argument(
-        "--info-json",
-        metavar="DIRECTORY_PATH",
+        "data_dir",
+        metavar="DATA_DIR",
         type=str,
-        help="Directory path containing info JSON files to parse.",
+        help="Directory path containing both info and live chat JSON files to parse.",
     )
-    parse_parser.add_argument(
-        "--live-chat-json",
-        metavar="DIRECTORY_PATH",
-        type=str,
-        help="Directory path containing live chat JSON files to parse.",
-    )
-
-    # Missing days sub-command
-    missing_days_parser = subparsers.add_parser(
-        "missing_days", help="Count missing video metadata days since 2024-05-25."
-    )
-    # No arguments needed for missing_days anymore
 
     args = parser.parse_args()
 
@@ -377,51 +365,18 @@ def main():
         )
 
     elif args.command == "parse":
-        if not args.info_json and not args.live_chat_json:
+        if not os.path.isdir(args.data_dir):
             parse_parser.error(
-                "For the 'parse' command, you must specify --info-json and/or --live-chat-json path(s)."
+                f"Directory not found at {args.data_dir}"
             )
 
-        if args.info_json:
-            directory_path_info = args.info_json
-            if not os.path.isdir(directory_path_info):
-                parse_parser.error(
-                    f"Directory for --info not found at {directory_path_info}"
-                )
-            print(f"Parsing info JSON files from: {directory_path_info}")
-            parse_jsons_to_postgres(
-                directory_path_info, db_config, json_type="info"
-            )
-
-        if args.live_chat_json:
-            directory_path_live_chat_json = args.live_chat_json
-            if not os.path.isdir(directory_path_live_chat_json):
-                parse_parser.error(
-                    f"Directory for --live-chat not found at {directory_path_live_chat_json}"
-                )
-            print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            parse_jsons_to_postgres(
-                directory_path_live_chat_json, db_config, json_type="live_chat"
-            )
-
-    elif args.command == "missing_days":
-        missing_count, missing_dates = count_missing_video_days(db_config)
-        if missing_count >= 0:
-            # Determine the actual start date used for the report
-            today_date_cli = pd.Timestamp.today().date()
-            end_of_period_cli = today_date_cli - pd.Timedelta(days=1)
-            effective_start_date_cli = pd.Timestamp('2024-05-25').date()
-
-            if end_of_period_cli < effective_start_date_cli:
-                 print(f"The period ending yesterday ({end_of_period_cli.strftime('%Y-%m-%d')}) is before the earliest allowed start date ({effective_start_date_cli.strftime('%Y-%m-%d')}). No data to check.")
-            else:
-                print(f"Found {missing_count} days missing video metadata in the period from {effective_start_date_cli.strftime('%Y-%m-%d')} to {end_of_period_cli.strftime('%Y-%m-%d')}.")
-                if missing_dates:
-                    print("Missing dates:")
-                    for date_obj in missing_dates:
-                        print(f"- {date_obj.strftime('%Y-%m-%d')}")
-        else:
-            print(f"Could not determine missing days due to an error.")
+        print(f"Parsing JSON files from: {args.data_dir}")
+        parse_jsons_to_postgres(
+            args.data_dir, db_config, json_type="info"
+        )
+        parse_jsons_to_postgres(
+            args.data_dir, db_config, json_type="live_chat"
+        )
 
 
 if __name__ == "__main__":
