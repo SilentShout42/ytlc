@@ -81,11 +81,8 @@ uv sync
 Place your YouTube live chat JSON files in a directory, then parse them:
 
 ```bash
-# Parse video metadata (info.json files)
-uv run main.py parse --info-json /path/to/info/json/files
-
-# Parse live chat messages (live_chat.json files)
-uv run main.py parse --live-chat-json /path/to/chat/json/files
+# Parse both video metadata (info.json) and live chat messages (live_chat.json)
+uv run main.py parse /path/to/json/files
 ```
 
 ### 6. Analyze the data
@@ -102,12 +99,11 @@ uv run main.py search "pattern1" "pattern2"
 Parse JSON files and load them into PostgreSQL.
 
 ```bash
-uv run main.py parse --info-json DIR --live-chat-json DIR
+uv run main.py parse DATA_DIR
 ```
 
-Options:
-- `--info-json DIR`: Directory containing video info JSON files
-- `--live-chat-json DIR`: Directory containing live chat JSON files
+Arguments:
+- `DATA_DIR`: Directory containing both video info (info.json) and live chat (live_chat.json) JSON files
 
 ### `search`
 
@@ -247,12 +243,21 @@ ytlc/
 └── pyproject.toml       # Python dependencies
 ```
 
-### Legacy Database Setup
+### Getting the `info.json` and `live_chat.json` dataset
 
-If you prefer to run PostgreSQL natively instead of using Docker, you can use the legacy setup script:
+Options explanation:
+* `-t sleep -r 10M` adds some delays between API calls and rate limits downloads to 10 MBs/
+* `--no-download` skips download of audio/video
+* `--no-wait --no-ignore-no-formats-error` stops yt-dlp from waiting for an upcoming live stream or erroring out on a pre-live video.
+* `--no-overwrite` prevents yt-dlp from overwriting existing live chat or video metadata files. This way you can re-run these commands as-is without re-downloading content. Consider using the `--download-archive` option if you want to save even more time for repeated runs (at the cost of some statefulness.)
 
-```bash
-./misc/createdb.sh
+```shell
+# Get a list of all vods - replace with the @Channel/streams URL you're working with
+yt-dlp -j --flat-playlist 'https://www.youtube.com/@KannaYanagi/streams' | jq -r 'select(.was_live==true) | .url' | tee all.txt
+
+# Fetch live chat transcripts (live_chat.json)
+ yt-dlp -t sleep -r 10M --no-download --no-wait --no-ignore-no-formats-error --write-subs --sub-lang live_chat --no-overwrite --batch all.txt
+
+# Fetch video metadata (info.json)
+yt-dlp -t sleep -r 10M --no-download --no-wait --no-ignore-no-formats-error --write-info-json --no-overwrite --batch all.txt
 ```
-
-This will create the database and user on your local PostgreSQL installation.
