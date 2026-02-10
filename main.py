@@ -382,8 +382,9 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
         # Create windows
         windows = np.arange(0, max_offset_sec + window_size_seconds, window_size_seconds)
 
-        # Count unique chatters in each window
+        # Count unique chatters and messages in each window
         unique_chatters_per_window = []
+        messages_per_window = []
         window_labels = []
 
         for i in range(len(windows) - 1):
@@ -396,9 +397,11 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
                 (video_df['video_offset_time_sec'] < window_end)
             ]
 
-            # Count unique authors
+            # Count unique authors and total messages
             unique_count = window_messages['author'].nunique()
+            message_count = len(window_messages)
             unique_chatters_per_window.append(unique_count)
+            messages_per_window.append(message_count)
 
             # Create label for this window (e.g., "0:00-5:00")
             start_hms = pd.to_datetime(window_start, unit='s').strftime('%H:%M:%S')
@@ -407,6 +410,7 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
 
         results_per_video[video_id] = {
             'counts': unique_chatters_per_window,
+            'messages': messages_per_window,
             'labels': window_labels,
             'max_offset': max_offset_sec,
             'title': video_titles.get(video_id, 'Unknown Title'),
@@ -431,7 +435,17 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             y=result['counts'],
             marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
             hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
-            showlegend=False
+            name='Unique Chatters',
+        ))
+        fig.add_trace(go.Scatter(
+            x=result['labels'],
+            y=result['messages'],
+            mode='lines+markers',
+            line=dict(color='darkorange', width=2),
+            marker=dict(size=6),
+            hovertemplate='<b>%{x}</b><br>Messages: %{y}<extra></extra>',
+            name='Messages',
+            yaxis='y2',
         ))
 
         fig.update_layout(
@@ -444,6 +458,12 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             ),
             xaxis_title=f'Time Window ({window_size_minutes} min intervals)',
             yaxis_title='Unique Chatters',
+            yaxis2=dict(
+                title='Messages',
+                overlaying='y',
+                side='right',
+                showgrid=False,
+            ),
             hovermode='x unified',
             template='plotly_white',
             height=600,
@@ -462,7 +482,7 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
                 )
                 for video_id, result in results_per_video.items()
             ],
-            specs=[[{"secondary_y": False}] for _ in range(num_videos)],
+            specs=[[{"secondary_y": True}] for _ in range(num_videos)],
         )
 
         for idx, (video_id, result) in enumerate(results_per_video.items(), start=1):
@@ -472,18 +492,30 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
                     y=result['counts'],
                     marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
                     hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
-                    showlegend=False,
-                    name=video_id
+                    name='Unique Chatters',
                 ),
-                row=idx, col=1
+                row=idx, col=1, secondary_y=False
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=result['labels'],
+                    y=result['messages'],
+                    mode='lines+markers',
+                    line=dict(color='darkorange', width=2),
+                    marker=dict(size=6),
+                    hovertemplate='<b>%{x}</b><br>Messages: %{y}<extra></extra>',
+                    name='Messages',
+                ),
+                row=idx, col=1, secondary_y=True
             )
 
             fig.update_xaxes(title_text=f'Time Window ({window_size_minutes} min intervals)', row=idx, col=1, tickangle=-45)
-            fig.update_yaxes(title_text='Unique Chatters', row=idx, col=1)
+            fig.update_yaxes(title_text='Unique Chatters', row=idx, col=1, secondary_y=False)
+            fig.update_yaxes(title_text='Messages', row=idx, col=1, secondary_y=True, showgrid=False)
 
         fig.update_layout(
             height=500 * num_videos,
-            showlegend=False,
+            showlegend=True,
             template='plotly_white',
             hovermode='x unified',
             margin=dict(b=120)
