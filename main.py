@@ -9,9 +9,11 @@ from rich.console import Console
 from rich.markup import escape
 from rich import print
 from math import ceil
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
+from bokeh.plotting import figure, output_file, save, show
+from bokeh.layouts import column
+from bokeh.models import HoverTool, Range1d
+from bokeh.io import output_file as bokeh_output_file
 
 # Enable pandas copy-on-write mode for memory optimization
 pd.options.mode.copy_on_write = True
@@ -301,19 +303,84 @@ def print_search_results_as_markdown(
             f.write(markdown_output)
 
 
-def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, output_file=None):
+def plot_unique_chatters_over_time(
+    db_config,
+    video_ids,
+    window_size_minutes=5,
+    output_file=None,
+    last_n=None,
+    start_date=None,
+    end_date=None,
+):
     """
     Creates an interactive histogram showing the count of unique chatters over the length of the stream
-    in 5-minute windows. Uses Plotly for better emoji and text rendering support.
+    in 5-minute windows. Uses Bokeh for better support of multiple independent plots.
 
     Parameters:
         db_config (dict): Database configuration for PostgreSQL connection.
         video_ids (list): List of video IDs to analyze.
         window_size_minutes (int): Size of time windows in minutes.
         output_file (str): Path to save the plot image (HTML format). If None, opens in browser.
+        last_n (int or None): Plot the most recent N VODs when video_ids is empty.
+        start_date (str or None): Filter VODs from this date (YYYY-MM-DD) when video_ids is empty.
+        end_date (str or None): Filter VODs up to this date (YYYY-MM-DD) when video_ids is empty.
     """
     # Create a connection string for pandas
     conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+
+    # Resolve video IDs from metadata when not provided
+    if not video_ids:
+        if last_n is not None and (start_date or end_date):
+            print("[red]Use either --last-n or --start-date/--end-date, not both.[/red]")
+            return
+
+        start_date_value = None
+        end_date_value = None
+        try:
+            if start_date:
+                start_date_value = pd.to_datetime(start_date).date()
+            if end_date:
+                end_date_value = pd.to_datetime(end_date).date()
+        except Exception:
+            print("[red]Invalid date format. Use YYYY-MM-DD.[/red]")
+            return
+
+        if last_n is not None:
+            if last_n <= 0:
+                print("[red]--last-n must be a positive integer.[/red]")
+                return
+
+        where_clauses = []
+        if start_date_value:
+            where_clauses.append(
+                f"COALESCE(release_timestamp, timestamp)::date >= '{start_date_value}'"
+            )
+        if end_date_value:
+            where_clauses.append(
+                f"COALESCE(release_timestamp, timestamp)::date <= '{end_date_value}'"
+            )
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        limit_sql = f"LIMIT {int(last_n)}" if last_n else ""
+
+        video_query = f"""
+            SELECT video_id
+            FROM video_metadata
+            {where_sql}
+            ORDER BY COALESCE(release_timestamp, timestamp) DESC
+            {limit_sql};
+        """
+
+        try:
+            video_df = pd.read_sql_query(video_query, conn_str)
+        except Exception as e:
+            print(f"[red]Error querying video metadata: {e}[/red]")
+            return
+
+        video_ids = video_df["video_id"].dropna().tolist()
+        if not video_ids:
+            print("[yellow]No videos found for the selected criteria.[/yellow]")
+            return
 
     # Build the placeholders and parameters for the SQL query
     placeholders = ",".join([f"'{vid}'" for vid in video_ids])
@@ -370,7 +437,15 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
     # Group by video_id and process each video separately
     results_per_video = {}
 
-    for video_id in video_ids:
+    def video_sort_key(vid):
+        video_date = video_dates.get(vid)
+        if video_date is None:
+            return (1, pd.Timestamp.max.date(), vid)
+        return (0, video_date, vid)
+
+    ordered_video_ids = sorted(video_ids, key=video_sort_key)
+
+    for video_id in ordered_video_ids:
         video_df = df[df['video_id'] == video_id].copy()
 
         if video_df.empty:
@@ -408,118 +483,171 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             end_hms = pd.to_datetime(window_end, unit='s').strftime('%H:%M:%S')
             window_labels.append(f"{start_hms}-{end_hms}")
 
+        video_date = video_dates.get(video_id)
+        date_label = video_date.isoformat() if video_date else 'Unknown Date'
+
+        total_unique_chatters = video_df['author'].nunique()
+        total_messages = len(video_df)
+
         results_per_video[video_id] = {
             'counts': unique_chatters_per_window,
             'messages': messages_per_window,
             'labels': window_labels,
             'max_offset': max_offset_sec,
             'title': video_titles.get(video_id, 'Unknown Title'),
-            'date': video_dates.get(video_id, 'Unknown Date'),
+            'date': date_label,
             'url': f"https://www.youtube.com/watch?v={video_id}",
+            'total_unique': int(total_unique_chatters),
+            'total_messages': int(total_messages),
         }
 
-    # Create interactive plot using Plotly
+    # Create interactive plots using Bokeh
     num_videos = len(results_per_video)
 
     if num_videos == 0:
         print("[yellow]No chat messages found for the specified video IDs.[/yellow]")
         return
-    elif num_videos == 1:
-        # Single video: create a single histogram
-        video_id = list(results_per_video.keys())[0]
-        result = results_per_video[video_id]
 
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=result['labels'],
-            y=result['counts'],
-            marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
-            hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
-            name='Unique Chatters',
-        ))
-        fig.add_trace(go.Scatter(
-            x=result['labels'],
-            y=result['messages'],
-            mode='lines+markers',
-            line=dict(color='darkorange', width=2),
-            marker=dict(size=6),
-            hovertemplate='<b>%{x}</b><br>Messages: %{y}<extra></extra>',
-            name='Messages',
-            yaxis='y2',
-        ))
+    # Create a list to hold all figures
+    figures = []
 
-        fig.update_layout(
-            title=dict(
-                text=(
-                    f"<a href='{result['url']}' target='_blank'>{result['title']}</a>"
-                    f"<br><sub>{result['date']} | {video_id}</sub>"
-                ),
-                font=dict(size=16)
-            ),
-            xaxis_title=f'Time Window ({window_size_minutes} min intervals)',
-            yaxis_title='Unique Chatters',
-            yaxis2=dict(
-                title='Messages',
-                overlaying='y',
-                side='right',
-                showgrid=False,
-            ),
-            hovermode='x unified',
-            template='plotly_white',
-            height=600,
-            xaxis=dict(tickangle=-45),
-            margin=dict(b=120)
+    for video_id, result in results_per_video.items():
+        # Format time labels for x-axis (show every nth label to avoid crowding)
+        x_indices = list(range(len(result['labels'])))
+        x_labels = result['labels']
+
+        # Determine tick spacing based on number of windows
+        num_windows = len(x_labels)
+        if num_windows > 50:
+            tick_interval = num_windows // 20
+        elif num_windows > 20:
+            tick_interval = num_windows // 10
+        else:
+            tick_interval = max(1, num_windows // 10)
+
+        # Create figure with dual y-axes
+        p = figure(
+            width=1200,
+            height=400,
+            title=f"{result['title']}\n{result['date']} | {result['total_unique']} unique chatters | {result['total_messages']} messages",
+            x_axis_label=f"Time Window ({window_size_minutes} min intervals)",
+            y_axis_label="Unique Chatters",
+            toolbar_location="above",
+            tools="pan,wheel_zoom,box_zoom,reset,save",
         )
-    else:
-        # Multiple videos: create subplots
-        fig = make_subplots(
-            rows=num_videos,
-            cols=1,
-            subplot_titles=[
-                (
-                    f"<a href='{result['url']}' target='_blank'>{result['title']}</a>"
-                    f"<br>{result['date']} | {video_id}"
-                )
-                for video_id, result in results_per_video.items()
+
+        # Configure x-axis
+        p.xaxis.ticker = list(range(0, len(x_labels), tick_interval))
+        p.xaxis.major_label_overrides = {i: x_labels[i] for i in range(0, len(x_labels), tick_interval)}
+        p.xaxis.major_label_orientation = 0.785  # 45 degrees in radians
+
+        # Create unified data source with all information
+        from bokeh.models import ColumnDataSource, LinearAxis, TapTool, OpenURL
+
+        # Set up the secondary y-axis for messages
+        max_chatters = max(result['counts']) if result['counts'] else 1
+        max_messages = max(result['messages']) if result['messages'] else 1
+
+        # Create a scaling factor for the secondary axis
+        scaling_factor = max_chatters / max_messages if max_messages > 0 else 1
+        scaled_messages = [m * scaling_factor for m in result['messages']]
+
+        # Create URLs for each time window (pointing to YouTube video at that timestamp)
+        urls = []
+        for i, label in enumerate(x_labels):
+            # Parse the start time from the label (format: "HH:MM:SS-HH:MM:SS")
+            start_time_str = label.split('-')[0]
+            # Convert to seconds
+            h, m, s = map(int, start_time_str.split(':'))
+            timestamp_seconds = h * 3600 + m * 60 + s
+            urls.append(f"{result['url']}&t={timestamp_seconds}s")
+
+        # Unified data source with all information
+        source = ColumnDataSource(data=dict(
+            x=x_indices,
+            time_label=x_labels,
+            chatters=result['counts'],
+            messages=result['messages'],
+            scaled_messages=scaled_messages,
+            url=urls
+        ))
+
+        # Add bars for unique chatters
+        bars = p.vbar(
+            x='x',
+            top='chatters',
+            width=0.8,
+            source=source,
+            color='steelblue',
+            line_color='black',
+            line_width=1.5,
+            legend_label='Unique Chatters',
+            nonselection_fill_alpha=1.0,
+            nonselection_fill_color='steelblue',
+            nonselection_line_alpha=1.0,
+            nonselection_line_color='black',
+        )
+
+        # Add line for messages (scaled to fit with bars)
+        line = p.line(
+            'x',
+            'scaled_messages',
+            source=source,
+            line_width=2,
+            color='darkorange',
+            legend_label='Messages',
+            nonselection_line_alpha=1.0,
+            nonselection_line_color='darkorange',
+        )
+
+        # Add circle markers on the line
+        circles = p.scatter(
+            'x',
+            'scaled_messages',
+            source=source,
+            size=6,
+            color='darkorange',
+            marker='circle',
+            nonselection_fill_alpha=1.0,
+            nonselection_fill_color='darkorange',
+            nonselection_line_alpha=1.0,
+        )
+
+        # Add secondary y-axis label using extra_y_ranges
+        p.extra_y_ranges = {"messages": Range1d(start=0, end=max_messages * 1.1)}
+        p.add_layout(LinearAxis(y_range_name="messages", axis_label="Messages"), 'right')
+
+        # Add unified hover tool showing both metrics (attach only to bars to avoid duplicates)
+        hover = HoverTool(
+            renderers=[bars],
+            tooltips=[
+                ("Time", "@time_label"),
+                ("Unique Chatters", "@chatters"),
+                ("Messages", "@messages")
             ],
-            specs=[[{"secondary_y": True}] for _ in range(num_videos)],
+            mode='vline'
         )
 
-        for idx, (video_id, result) in enumerate(results_per_video.items(), start=1):
-            fig.add_trace(
-                go.Bar(
-                    x=result['labels'],
-                    y=result['counts'],
-                    marker=dict(color='steelblue', line=dict(color='black', width=1.5)),
-                    hovertemplate='<b>%{x}</b><br>Unique Chatters: %{y}<extra></extra>',
-                    name='Unique Chatters',
-                ),
-                row=idx, col=1, secondary_y=False
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=result['labels'],
-                    y=result['messages'],
-                    mode='lines+markers',
-                    line=dict(color='darkorange', width=2),
-                    marker=dict(size=6),
-                    hovertemplate='<b>%{x}</b><br>Messages: %{y}<extra></extra>',
-                    name='Messages',
-                ),
-                row=idx, col=1, secondary_y=True
-            )
+        p.add_tools(hover)
 
-            fig.update_xaxes(title_text=f'Time Window ({window_size_minutes} min intervals)', row=idx, col=1, tickangle=-45)
-            fig.update_yaxes(title_text='Unique Chatters', row=idx, col=1, secondary_y=False)
-            fig.update_yaxes(title_text='Messages', row=idx, col=1, secondary_y=True, showgrid=False)
+        # Add tap tool to make bars clickable (opens YouTube video at timestamp)
+        tap_tool = TapTool()
+        p.add_tools(tap_tool)
 
-        fig.update_layout(
-            height=500 * num_videos,
-            showlegend=True,
-            template='plotly_white',
-            hovermode='x unified',
-            margin=dict(b=120)
-        )
+        url_callback = OpenURL(url="@url")
+        tap_tool.callback = url_callback
+
+        # Configure legend
+        p.legend.location = "top_right"
+        p.legend.click_policy = "hide"
+
+        # Make the title a clickable link (add to title as HTML won't work, so we'll keep it simple)
+        p.title.text_font_size = "14pt"
+
+        figures.append(p)
+
+    # Combine all figures into a column layout
+    layout = column(*figures)
 
     # Save or show the plot
     if output_file:
@@ -528,10 +656,11 @@ def plot_unique_chatters_over_time(db_config, video_ids, window_size_minutes=5, 
             output_file = output_file.replace('.png', '.html')
             if not output_file.endswith('.html'):
                 output_file += '.html'
-        fig.write_html(output_file)
+        bokeh_output_file(output_file)
+        save(layout)
         print(f"[green]Interactive plot saved to: {output_file}[/green]")
     else:
-        fig.show()
+        show(layout)
 
 
 
@@ -602,8 +731,8 @@ def main():
         "video_ids",
         metavar="VIDEO_ID",
         type=str,
-        nargs="+",
-        help="List of video IDs to analyze.",
+        nargs="*",
+        help="List of video IDs to analyze (omit when using --last-n or date filters).",
     )
     plot_parser.add_argument(
         "-w",
@@ -619,6 +748,24 @@ def main():
         metavar="OUTPUT_FILE",
         type=str,
         help="File to save the interactive plot to (HTML format).",
+    )
+    plot_parser.add_argument(
+        "--last-n",
+        metavar="COUNT",
+        type=int,
+        help="Plot the most recent N VODs by release date.",
+    )
+    plot_parser.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        type=str,
+        help="Filter VODs from this date (inclusive).",
+    )
+    plot_parser.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        type=str,
+        help="Filter VODs up to this date (inclusive).",
     )
 
     args = parser.parse_args()
@@ -693,11 +840,18 @@ def main():
             print(f"Could not determine missing days due to an error.")
 
     elif args.command == "plot":
+        if not args.video_ids and not (args.last_n or args.start_date or args.end_date):
+            plot_parser.error(
+                "Provide VIDEO_IDs or use --last-n/--start-date/--end-date to select videos."
+            )
         plot_unique_chatters_over_time(
             db_config,
             args.video_ids,
             window_size_minutes=args.window_size,
             output_file=args.output_file,
+            last_n=args.last_n,
+            start_date=args.start_date,
+            end_date=args.end_date,
         )
 
 

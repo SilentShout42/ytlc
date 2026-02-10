@@ -6,10 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "asyncio>=3.4.3",
-    "matplotlib>=3.8.0",
+    "bokeh>=3.3.0",
     "orjson>=3.10.18",
     "pandas>=2.2.3",
-    "plotly>=5.17.0",
     "psycopg2>=2.9.10",
     "rich>=14.0.0",
     "sqlalchemy>=2.0.41",
