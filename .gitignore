@@ -13,5 +13,15 @@ samples
 *.db*
 *.csv
 
-!saved_queries/**
-*.html
+# Environment variables and credentials
+.env
+.envrc
+
+# Large data files
+**/*.live_chat.json
+**/*.info.json
+**/*.sql
+
+# Include specific SQL files
+!saved_queries/**/*.sql
+!misc/**/*.sql

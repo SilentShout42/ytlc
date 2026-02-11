@@ -2,7 +2,6 @@ import json
 import os
 import pandas as pd
 import re
-import asyncio
 import argparse
 from rich.markdown import Markdown
 from rich.console import Console
@@ -40,8 +39,17 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
     # Create a connection string for pandas
     conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
 
-    # Query to fetch messages and metadata
-    query = """
+    # Build PostgreSQL regex filter conditions (case-insensitive)
+    # Note: PostgreSQL regex syntax (~*) is close to Python but not identical
+    # This filters at the database level using the gin_trgm_ops index for performance
+    regex_conditions = " OR ".join([
+        f"lc.message ~* '{pattern.replace(chr(39), chr(39)*2)}'"  # Escape single quotes
+        for pattern in regex_patterns
+    ])
+
+    # Query to fetch messages and metadata with database-level filtering
+    # This uses the trigram index to efficiently find matching messages
+    query = f"""
         SELECT
             lc.timestamp,
             lc.video_id,
@@ -53,12 +61,45 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
             vm.title,
             lc.video_offset_time_msec
         FROM live_chat lc
-        JOIN video_metadata vm ON lc.video_id = vm.video_id;
+        JOIN video_metadata vm ON lc.video_id = vm.video_id
+        WHERE {regex_conditions}
+        ORDER BY lc.video_id, lc.timestamp;
     """
 
     # Use pandas to read directly from the database into a DataFrame
-    df = pd.read_sql_query(query, conn_str)
-    total_lines_searched = len(df)
+    # This only fetches rows matching the regex patterns, not the entire table
+    db_filtered = False
+    try:
+        df = pd.read_sql_query(query, conn_str)
+        db_filtered = True
+    except Exception as e:
+        # If PostgreSQL regex fails, fall back to fetching all rows
+        print(f"Database-level regex filtering failed: {e}")
+        print("Falling back to Python-level filtering (this may be slower)...")
+        query_fallback = """
+            SELECT
+                lc.timestamp,
+                lc.video_id,
+                ceil(extract(epoch from age(lc.timestamp, vm.release_timestamp))) as video_offset_time_seconds,
+                lc.message,
+                lc.author,
+                lc.author_channel_id,
+                vm.release_timestamp,
+                vm.title,
+                lc.video_offset_time_msec
+            FROM live_chat lc
+            JOIN video_metadata vm ON lc.video_id = vm.video_id;
+        """
+        df = pd.read_sql_query(query_fallback, conn_str)
+
+    # Query for the total number of messages in the database (what was actually searched)
+    try:
+        total_lines_query = "SELECT COUNT(*) as total_count FROM live_chat;"
+        total_lines_df = pd.read_sql_query(total_lines_query, conn_str)
+        total_lines_searched = int(total_lines_df.loc[0, 'total_count']) if not total_lines_df.empty else len(df)
+    except Exception:
+        # Fallback to the length of the dataframe
+        total_lines_searched = len(df)
 
     # Query for the latest live chat message in the database
     latest_live_chat_timestamp = None
@@ -75,15 +116,16 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
         df["video_offset_time_seconds"].fillna(0).astype(int)
     )
 
-    # Filter rows matching any of the regex patterns
-    patterns = [re.compile(pattern) for pattern in regex_patterns]
-    df["matches"] = df["message"].apply(
-        lambda x: any(pattern.search(x) for pattern in patterns)
-    )
-    matching_df = df[df["matches"]]
+    # If database-level filtering failed, apply Python regex filtering now
+    if not db_filtered:
+        patterns = [re.compile(pattern) for pattern in regex_patterns]
+        df["matches"] = df["message"].apply(
+            lambda x: any(pattern.search(x) for pattern in patterns)
+        )
+        df = df[df["matches"]]
 
     # Group matching rows by video_id and sort by timestamp
-    grouped = matching_df.groupby("video_id", group_keys=False)
+    grouped = df.groupby("video_id", group_keys=False)
     results = []
 
     for video_id, group in grouped:
@@ -786,23 +828,11 @@ def main():
         "parse", help="Parse JSON files and load into PostgreSQL."
     )
     parse_parser.add_argument(
-        "--info-json",
-        metavar="DIRECTORY_PATH",
+        "data_dir",
+        metavar="DATA_DIR",
         type=str,
-        help="Directory path containing info JSON files to parse.",
+        help="Directory path containing both info and live chat JSON files to parse.",
     )
-    parse_parser.add_argument(
-        "--live-chat-json",
-        metavar="DIRECTORY_PATH",
-        type=str,
-        help="Directory path containing live chat JSON files to parse.",
-    )
-
-    # Missing days sub-command
-    missing_days_parser = subparsers.add_parser(
-        "missing_days", help="Count missing video metadata days since 2024-05-25."
-    )
-    # No arguments needed for missing_days anymore
 
     # Plot sub-command
     plot_parser = subparsers.add_parser(
@@ -870,55 +900,18 @@ def main():
         )
 
     elif args.command == "parse":
-        if not args.info_json and not args.live_chat_json:
+        if not os.path.isdir(args.data_dir):
             parse_parser.error(
-                "For the 'parse' command, you must specify --info-json and/or --live-chat-json path(s)."
+                f"Directory not found at {args.data_dir}"
             )
 
-        if args.info_json:
-            directory_path_info = args.info_json
-            if not os.path.isdir(directory_path_info):
-                parse_parser.error(
-                    f"Directory for --info not found at {directory_path_info}"
-                )
-            print(f"Parsing info JSON files from: {directory_path_info}")
-            asyncio.run(
-                parse_jsons_to_postgres(
-                    directory_path_info, db_config, json_type="info"
-                )
-            )
-
-        if args.live_chat_json:
-            directory_path_live_chat_json = args.live_chat_json
-            if not os.path.isdir(directory_path_live_chat_json):
-                parse_parser.error(
-                    f"Directory for --live-chat not found at {directory_path_live_chat_json}"
-                )
-            print(f"Parsing live chat JSON files from: {directory_path_live_chat_json}")
-            asyncio.run(
-                parse_jsons_to_postgres(
-                    directory_path_live_chat_json, db_config, json_type="live_chat"
-                )
-            )
-
-    elif args.command == "missing_days":
-        missing_count, missing_dates = count_missing_video_days(db_config)
-        if missing_count >= 0:
-            # Determine the actual start date used for the report
-            today_date_cli = pd.Timestamp.today().date()
-            end_of_period_cli = today_date_cli - pd.Timedelta(days=1)
-            effective_start_date_cli = pd.Timestamp('2024-05-25').date()
-
-            if end_of_period_cli < effective_start_date_cli:
-                 print(f"The period ending yesterday ({end_of_period_cli.strftime('%Y-%m-%d')}) is before the earliest allowed start date ({effective_start_date_cli.strftime('%Y-%m-%d')}). No data to check.")
-            else:
-                print(f"Found {missing_count} days missing video metadata in the period from {effective_start_date_cli.strftime('%Y-%m-%d')} to {end_of_period_cli.strftime('%Y-%m-%d')}.")
-                if missing_dates:
-                    print("Missing dates:")
-                    for date_obj in missing_dates:
-                        print(f"- {date_obj.strftime('%Y-%m-%d')}")
-        else:
-            print(f"Could not determine missing days due to an error.")
+        print(f"Parsing JSON files from: {args.data_dir}")
+        parse_jsons_to_postgres(
+            args.data_dir, db_config, json_type="info"
+        )
+        parse_jsons_to_postgres(
+            args.data_dir, db_config, json_type="live_chat"
+        )
 
     elif args.command == "plot":
         if not args.video_ids and not (args.last_n or args.start_date or args.end_date):

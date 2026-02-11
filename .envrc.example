@@ -1,0 +1,17 @@
+# PostgreSQL Connection Configuration for direnv
+#
+# NOTE: This file is a reference only. The actual .envrc file is auto-generated
+# by running: ./scripts/setup-db.sh
+#
+# The auto-generated .envrc file will contain environment variables for psql
+# with the randomly generated password from .env
+
+# PostgreSQL connection environment variables
+# These are standard PostgreSQL environment variables that are automatically
+# recognized by psql and other PostgreSQL tools
+
+export PGHOST=localhost
+export PGPORT=5432
+export PGDATABASE=ytlc
+export PGUSER=ytlc
+export PGPASSWORD=auto-generated-password
