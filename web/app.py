@@ -50,6 +50,61 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/autocomplete', methods=['GET'])
+def autocomplete_titles():
+    """
+    Get autocomplete suggestions for stream titles.
+
+    Query parameters:
+    - q: Search query (minimum 2 characters)
+    - limit: Maximum number of suggestions (default: 10)
+    """
+    query = request.args.get('q', '').strip()
+    limit = request.args.get('limit', '10')
+
+    try:
+        limit = int(limit)
+        limit = min(limit, 50)  # Cap at 50
+    except ValueError:
+        limit = 10
+
+    # Require at least 2 characters
+    if len(query) < 2:
+        return jsonify({'success': True, 'suggestions': []})
+
+    # Use trigram similarity for fuzzy matching
+    sql_query = f"""
+        SELECT DISTINCT title, video_id, release_timestamp
+        FROM video_metadata
+        WHERE title ILIKE '%{query.replace(chr(39), chr(39)*2)}%'
+        ORDER BY release_timestamp DESC
+        LIMIT {limit};
+    """
+
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(text(sql_query), conn)
+
+            suggestions = []
+            for idx in range(len(df)):
+                row = df.iloc[idx]
+                suggestions.append({
+                    'title': row['title'],
+                    'video_id': row['video_id'],
+                    'release_timestamp': row['release_timestamp'].isoformat() if pd.notna(row['release_timestamp']) else None
+                })
+
+            return jsonify({
+                'success': True,
+                'suggestions': suggestions
+            })
+
+    except Exception as e:
+        logger.error(f"Error in autocomplete_titles: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/search', methods=['GET'])
 def search_streams():
     """

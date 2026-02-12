@@ -14,6 +14,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const loading = document.getElementById('loading');
     const errorMessage = document.getElementById('error-message');
 
+    // Autocomplete elements
+    const titleInput = document.getElementById('title');
+    const autocompleteSuggestions = document.getElementById('autocomplete-suggestions');
+    let autocompleteTimeout = null;
+    let selectedSuggestionIndex = -1;
+    let currentSuggestions = [];
+
     // Stats elements
     const statVideos = document.getElementById('stat-videos');
     const statMessages = document.getElementById('stat-messages');
@@ -26,6 +33,169 @@ document.addEventListener('DOMContentLoaded', function() {
     searchForm.addEventListener('submit', handleSearch);
     clearBtn.addEventListener('click', handleClear);
     closePlotBtn.addEventListener('click', closePlot);
+
+    // Autocomplete event listeners
+    titleInput.addEventListener('input', handleAutocompleteInput);
+    titleInput.addEventListener('keydown', handleAutocompleteKeydown);
+    titleInput.addEventListener('blur', () => {
+        // Delay hiding to allow click events to fire
+        setTimeout(() => {
+            hideAutocomplete();
+        }, 200);
+    });
+
+    // Close autocomplete when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!titleInput.contains(e.target) && !autocompleteSuggestions.contains(e.target)) {
+            hideAutocomplete();
+        }
+    });
+
+    /**
+     * Handle autocomplete input
+     */
+    function handleAutocompleteInput(e) {
+        const query = e.target.value.trim();
+
+        // Clear existing timeout
+        if (autocompleteTimeout) {
+            clearTimeout(autocompleteTimeout);
+        }
+
+        // Hide autocomplete if query is too short
+        if (query.length < 2) {
+            hideAutocomplete();
+            return;
+        }
+
+        // Debounce the API call
+        autocompleteTimeout = setTimeout(() => {
+            fetchAutocompleteSuggestions(query);
+        }, 300);
+    }
+
+    /**
+     * Handle keyboard navigation in autocomplete
+     */
+    function handleAutocompleteKeydown(e) {
+        const items = autocompleteSuggestions.querySelectorAll('.autocomplete-item');
+
+        if (!autocompleteSuggestions.classList.contains('visible') || items.length === 0) {
+            return;
+        }
+
+        switch(e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                selectedSuggestionIndex = Math.min(selectedSuggestionIndex + 1, items.length - 1);
+                updateSelectedSuggestion(items);
+                break;
+
+            case 'ArrowUp':
+                e.preventDefault();
+                selectedSuggestionIndex = Math.max(selectedSuggestionIndex - 1, -1);
+                updateSelectedSuggestion(items);
+                break;
+
+            case 'Enter':
+                if (selectedSuggestionIndex >= 0) {
+                    e.preventDefault();
+                    items[selectedSuggestionIndex].click();
+                }
+                break;
+
+            case 'Escape':
+                hideAutocomplete();
+                break;
+        }
+    }
+
+    /**
+     * Update selected suggestion visual state
+     */
+    function updateSelectedSuggestion(items) {
+        items.forEach((item, index) => {
+            if (index === selectedSuggestionIndex) {
+                item.classList.add('active');
+                item.scrollIntoView({ block: 'nearest' });
+            } else {
+                item.classList.remove('active');
+            }
+        });
+    }
+
+    /**
+     * Fetch autocomplete suggestions from API
+     */
+    async function fetchAutocompleteSuggestions(query) {
+        try {
+            const response = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}&limit=10`);
+            const data = await response.json();
+
+            if (data.success) {
+                currentSuggestions = data.suggestions;
+                displayAutocompleteSuggestions(data.suggestions);
+            }
+        } catch (error) {
+            console.error('Autocomplete error:', error);
+        }
+    }
+
+    /**
+     * Display autocomplete suggestions
+     */
+    function displayAutocompleteSuggestions(suggestions) {
+        if (suggestions.length === 0) {
+            hideAutocomplete();
+            return;
+        }
+
+        autocompleteSuggestions.innerHTML = '';
+        selectedSuggestionIndex = -1;
+
+        suggestions.forEach((suggestion, index) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+
+            const title = document.createElement('div');
+            title.className = 'autocomplete-item-title';
+            title.textContent = suggestion.title;
+
+            item.appendChild(title);
+
+            // Add date if available
+            if (suggestion.release_timestamp) {
+                const date = document.createElement('div');
+                date.className = 'autocomplete-item-date';
+                const dateObj = new Date(suggestion.release_timestamp);
+                date.textContent = dateObj.toLocaleDateString(undefined, {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                });
+                item.appendChild(date);
+            }
+
+            item.addEventListener('click', () => {
+                titleInput.value = suggestion.title;
+                hideAutocomplete();
+                titleInput.focus();
+            });
+
+            autocompleteSuggestions.appendChild(item);
+        });
+
+        autocompleteSuggestions.classList.add('visible');
+    }
+
+    /**
+     * Hide autocomplete suggestions
+     */
+    function hideAutocomplete() {
+        autocompleteSuggestions.classList.remove('visible');
+        selectedSuggestionIndex = -1;
+        currentSuggestions = [];
+    }
 
     /**
      * Load database statistics
@@ -213,6 +383,7 @@ document.addEventListener('DOMContentLoaded', function() {
         resultsPanel.style.display = 'none';
         closePlot();
         resultsContainer.innerHTML = '';
+        hideAutocomplete();
     }
 
     /**

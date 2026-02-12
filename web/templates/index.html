@@ -37,7 +37,10 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label for="title">Title Search:</label>
-                        <input type="text" id="title" name="title" placeholder="Enter stream title...">
+                        <div class="autocomplete-wrapper">
+                            <input type="text" id="title" name="title" placeholder="Enter stream title..." autocomplete="off">
+                            <div class="autocomplete-suggestions" id="autocomplete-suggestions"></div>
+                        </div>
                     </div>
                 </div>
 
