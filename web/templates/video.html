@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}{{ video.title }} - YTLC{% endblock %}
+
+{% block extra_css %}
+<link href="https://cdn.bokeh.org/bokeh/release/bokeh-3.8.2.min.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.8.2.min.css" rel="stylesheet" type="text/css">
+<link href="https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.8.2.min.css" rel="stylesheet" type="text/css">
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.bokeh.org/bokeh/release/bokeh-3.8.2.min.js"></script>
+<script src="https://cdn.bokeh.org/bokeh/release/bokeh-gl-3.8.2.min.js"></script>
+<script src="https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.8.2.min.js"></script>
+<script src="https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.8.2.min.js"></script>
+<script src="https://cdn.bokeh.org/bokeh/release/bokeh-api-3.8.2.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+    <a href="/" class="btn btn-secondary">&larr; Back to Videos</a>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h1 class="card-title">{{ video.title }}</h1>
+        <p class="card-text">
+            <strong>Date:</strong> {{ video.date }}<br>
+            <strong>Video ID:</strong> {{ video.video_id }}<br>
+            <strong>YouTube Link:</strong> <a href="https://www.youtube.com/watch?v={{ video.video_id }}" target="_blank">Watch on YouTube</a>
+        </p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <h2 class="card-title">Chat Activity</h2>
+        {% if plot_div %}
+        <div class="plot-container">
+            {{ plot_div|safe }}
+        </div>
+        {% else %}
+        <div class="alert alert-info" role="alert">
+            No chat data available for this video.
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block plot_script %}
+{% if plot_script %}
+{{ plot_script|safe }}
+{% endif %}
+{% endblock %}

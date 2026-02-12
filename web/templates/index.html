@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Videos - YTLC{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Videos</h1>
+
+{% if videos %}
+<div class="table-responsive">
+    <table class="table table-striped table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Date</th>
+                <th>Title</th>
+                <th>Video ID</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for video in videos %}
+            <tr style="cursor: pointer;" onclick="window.location='/video/{{ video.video_id }}';">
+                <td>{{ video.date }}</td>
+                <td>{{ video.title }}</td>
+                <td>{{ video.video_id }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-warning" role="alert">
+    No videos found in the database.
+</div>
+{% endif %}
+{% endblock %}
