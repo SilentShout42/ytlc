@@ -147,13 +147,15 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
     else:
         tick_interval = max(1, num_windows // 10)
 
-    # Create URLs for each time window
+    # Create URLs and timestamp data for each time window
     urls = []
+    timestamps = []
     for i, label in enumerate(window_labels):
         start_time_str = label.split('-')[0]
         h, m, s = map(int, start_time_str.split(':'))
         timestamp_seconds = h * 3600 + m * 60 + s
         urls.append(f"https://www.youtube.com/watch?v={video_id}&t={timestamp_seconds}s")
+        timestamps.append(timestamp_seconds)
 
     # Convert emoji names to image URLs
     emoji_image_urls = []
@@ -203,6 +205,7 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
         messages=messages_per_window,
         scaled_messages=scaled_messages,
         url=urls,
+        timestamp=timestamps,
         top_emoji=top_emojis,
         emoji_image_url=emoji_image_urls,
         emoji_y=emoji_y_positions
@@ -287,14 +290,18 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
     )
     p.add_tools(hover)
 
-    # Add tap tool with CustomJS to open URLs without affecting selection state
+    # Add tap tool with CustomJS to seek the YouTube player
     tap_tool = TapTool()
     tap_tool.callback = CustomJS(args=dict(source=source), code="""
         const data = source.data;
         const index = source.selected.indices[0];
         if (index !== undefined) {
-            const url = data['url'][index];
-            window.open(url, '_blank');
+            const timestamp = data['timestamp'][index];
+            // Control the YouTube player
+            if (typeof player !== 'undefined' && player.seekTo) {
+                player.seekTo(timestamp, true);
+                player.playVideo();
+            }
             // Clear selection to prevent visual artifacts
             source.selected.indices = [];
         }
