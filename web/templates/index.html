@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Live Chat Stream Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.bokeh.org/bokeh/release/bokeh-3.3.0.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 YouTube Live Chat Stream Analyzer</h1>
+            <p class="subtitle">Search for streams and visualize chat activity</p>
+        </header>
+
+        <!-- Statistics Panel -->
+        <div class="stats-panel" id="stats-panel">
+            <div class="stat-item">
+                <span class="stat-label">Total Streams:</span>
+                <span class="stat-value" id="stat-videos">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Total Messages:</span>
+                <span class="stat-value" id="stat-messages">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Date Range:</span>
+                <span class="stat-value" id="stat-dates">-</span>
+            </div>
+        </div>
+
+        <!-- Search Panel -->
+        <div class="search-panel">
+            <h2>Search Streams</h2>
+            <form id="search-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="title">Title Search:</label>
+                        <input type="text" id="title" name="title" placeholder="Enter stream title...">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="start-date">Start Date:</label>
+                        <input type="date" id="start-date" name="start_date">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="end-date">End Date:</label>
+                        <input type="date" id="end-date" name="end_date">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="limit">Max Results:</label>
+                        <input type="number" id="limit" name="limit" value="50" min="1" max="500">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="window-size">Plot Window (minutes):</label>
+                        <input type="number" id="window-size" name="window_size" value="5" min="1" max="60">
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button type="submit" class="btn btn-primary">Search</button>
+                    <button type="button" class="btn btn-secondary" id="clear-btn">Clear</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Results Panel -->
+        <div class="results-panel" id="results-panel" style="display: none;">
+            <h2>Search Results <span id="result-count"></span></h2>
+            <div id="results-container"></div>
+        </div>
+
+        <!-- Plot Panel -->
+        <div class="plot-panel" id="plot-panel" style="display: none;">
+            <h2>Stream Analysis</h2>
+            <div class="plot-info">
+                <h3 id="plot-title"></h3>
+                <button class="btn btn-close" id="close-plot-btn">✕ Close</button>
+            </div>
+            <div id="plot-container"></div>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div class="loading" id="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>Loading...</p>
+        </div>
+
+        <!-- Error Message -->
+        <div class="error-message" id="error-message" style="display: none;"></div>
+    </div>
+
+    <footer>
+        <p>YouTube Live Chat Analyzer &copy; 2026 | Click on plot bars to open stream at that timestamp</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

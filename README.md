@@ -8,6 +8,7 @@ A tool for parsing and analyzing YouTube live chat data from archived streams.
 - Store chat messages in PostgreSQL database
 - Search chat messages with regex patterns
 - Track unique chatters and message counts in time windows
+- **Web interface** for searching streams and viewing interactive plots
 
 ## Prerequisites
 
@@ -91,6 +92,25 @@ uv run main.py parse /path/to/json/files
 # Search for messages matching a pattern
 uv run main.py search "pattern1" "pattern2"
 ```
+
+### 7. Use the Web Application (Optional)
+
+For a more user-friendly experience, you can use the web interface:
+
+```bash
+# Start the web application
+make web
+
+# Or run directly
+python web/app.py
+```
+
+Then open http://localhost:5000 in your browser to:
+- Search streams by title or date
+- View interactive plots of chat activity
+- Click on plot bars to jump to timestamps
+
+See [web/README.md](web/README.md) for more details.
 
 ## Commands
 
