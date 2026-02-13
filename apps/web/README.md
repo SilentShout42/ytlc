@@ -10,20 +10,20 @@ A Flask-based web application for viewing YouTube live chat analytics with inter
 
 ## Setup
 
-1. Install dependencies:
+1. Install dependencies (from project root):
    ```bash
-   pip install -e .
+   uv sync
    ```
 
 2. Ensure PostgreSQL database is running:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 3. Run the Flask application:
    ```bash
-   cd web
-   python app.py
+   cd apps/web
+   uv run python app.py
    ```
 
 4. Open your browser and navigate to:

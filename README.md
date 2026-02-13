@@ -82,14 +82,14 @@ Place your YouTube live chat JSON files in a directory, then parse them:
 
 ```bash
 # Parse both video metadata (info.json) and live chat messages (live_chat.json)
-uv run main.py parse /path/to/json/files
+uv run apps/cli/main.py parse /path/to/json/files
 ```
 
 ### 6. Analyze the data
 
 ```bash
 # Search for messages matching a pattern
-uv run main.py search "pattern1" "pattern2"
+uv run apps/cli/main.py search "pattern1" "pattern2"
 ```
 
 ## Commands
@@ -99,7 +99,7 @@ uv run main.py search "pattern1" "pattern2"
 Parse JSON files and load them into PostgreSQL.
 
 ```bash
-uv run main.py parse DATA_DIR
+uv run apps/cli/main.py parse DATA_DIR
 ```
 
 Arguments:
@@ -110,7 +110,7 @@ Arguments:
 Search messages and print results as markdown.
 
 ```bash
-uv run main.py search REGEX_PATTERN [REGEX_PATTERN ...] [-o OUTPUT_FILE] [--debug]
+uv run apps/cli/main.py search REGEX_PATTERN [REGEX_PATTERN ...] [-o OUTPUT_FILE] [--debug]
 ```
 
 Options:
@@ -123,8 +123,43 @@ Options:
 Count missing video metadata days since 2024-05-25.
 
 ```bash
-uv run main.py missing_days
+uv run apps/cli/main.py missing_days
 ```
+
+## Web Application
+
+The project includes a Flask-based web application for viewing chat analytics in a browser.
+
+### Running the Web App
+
+**Option 1: Using Make (recommended)**
+```bash
+make web
+```
+
+**Option 2: Manual**
+```bash
+# Make sure the database is running
+docker compose up -d
+
+# Start the Flask application
+cd apps/web
+uv run python app.py
+```
+
+Then open http://localhost:5000 in your browser.
+
+### Web App Features
+
+- **Video List**: Browse all videos with titles and air dates
+- **Video Detail Pages**:
+  - Embedded YouTube player
+  - Interactive Bokeh charts showing chat activity
+  - Click chart bars to jump to that timestamp in the video
+  - Hover over bars for detailed stats
+  - View unique chatters and message counts over time
+
+See [apps/web/README.md](apps/web/README.md) for more details.
 
 ## Database Management
 
@@ -227,16 +262,23 @@ To use the connection variables from `.envrc`:
 
 ```
 ytlc/
-├── main.py              # Main CLI application
-├── parser/              # JSON parsing modules
-│   ├── __init__.py
-│   └── parser.py
+├── apps/
+│   ├── cli/             # CLI application
+│   │   ├── main.py      # Main CLI entry point
+│   │   └── parser/      # JSON parsing modules
+│   │       ├── __init__.py
+│   │       └── parser.py
+│   └── web/             # Web application
+│       ├── app.py       # Flask application
+│       ├── templates/   # HTML templates
+│       └── static/      # Static assets
 ├── scripts/             # Setup and utility scripts
 │   └── setup-db.sh      # Database setup script (generates .env and .envrc)
 ├── misc/                # Miscellaneous files
 │   ├── createdb.sh      # Legacy database setup script
 │   └── init.sql         # Docker database initialization
 ├── saved_queries/       # SQL query examples
+├── img/                 # Emoji images
 ├── docker-compose.yml   # Database container setup
 ├── .env.example         # Example environment variables
 ├── .envrc.example       # Example PostgreSQL connection variables

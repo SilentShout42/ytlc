@@ -1,4 +1,4 @@
-.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean help
+.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean web help
 
 help:
 	@echo "ytlc - YouTube Live Chat Tool"
@@ -11,6 +11,7 @@ help:
 	@echo "  db-reset          Stop database and remove volume"
 	@echo "  db-dump           Backup database to backups/ytlc-TIMESTAMP.sql"
 	@echo "  db-restore FILE=<path>  Restore database from backup file"
+	@echo "  web               Start the Flask web application"
 	@echo "  clean             Remove Python cache files and __pycache__"
 	@echo "  help              Show this help message"
 	@echo ""
@@ -99,3 +100,10 @@ clean:
 	@find . -type f -name ".coverage*" -delete || true
 	@find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
 	@echo "✅ Cache cleaned"
+
+web:
+	@echo "🌐 Starting Flask web application..."
+	@if [ ! -f .env ]; then echo "❌ Database not initialized. Run 'make init' first."; exit 1; fi
+	@echo "📍 Web app will be available at: http://localhost:5000"
+	@echo "🛑 Press Ctrl+C to stop the server"
+	@cd apps/web && uv run python app.py
