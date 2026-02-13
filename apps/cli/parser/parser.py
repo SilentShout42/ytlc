@@ -122,12 +122,12 @@ def process_live_chat_file(args):
     This function is designed to be used with multiprocessing.Pool.
 
     Parameters:
-        args (tuple): (file_path, db_config, file_num, total_files)
+        args (tuple): (file_path, file_num, total_files)
 
     Returns:
         tuple: (file_path, message_count, success)
     """
-    file_path, db_config, file_num, total_files = args
+    file_path, file_num, total_files = args
 
     try:
         print(f"[{file_num}/{total_files}] Processing: {os.path.basename(file_path)}")
@@ -140,7 +140,7 @@ def process_live_chat_file(args):
             return (file_path, 0, True)
 
         # Insert messages to database
-        conn = psycopg2.connect(**db_config)
+        conn = psycopg2.connect()
         insert_messages_to_postgres(conn, messages)
         conn.commit()
         conn.close()
@@ -231,7 +231,7 @@ def insert_messages_to_postgres(conn, messages):
     )
 
 
-def parse_info_json_to_postgres(json_path, db_config):
+def parse_info_json_to_postgres(json_path):
     """
     Parses a YouTube video info JSON file and inserts metadata into a PostgreSQL database.
     Creates a table called "video_metadata" with columns: video_id, title, channel_id, channel_name, release_timestamp, duration, was_live, filename.
@@ -239,7 +239,7 @@ def parse_info_json_to_postgres(json_path, db_config):
     canonicalized_path = os.path.realpath(json_path)
 
     # Connect to PostgreSQL database
-    conn = psycopg2.connect(**db_config)
+    conn = psycopg2.connect()
     cursor = conn.cursor()
     cursor.execute("SET TIME ZONE 'UTC';")
 
@@ -322,7 +322,7 @@ def parse_info_json_to_postgres(json_path, db_config):
     conn.close()
 
 
-def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat", num_workers=None):
+def parse_jsons_to_postgres(directory_path, json_type="live_chat", num_workers=None):
     """
     Parses all YouTube JSON files (live chat or info) in a directory tree and inserts data into a PostgreSQL database using multiprocessing.
     For live chat JSONs, messages are stored in a single table named `live_chat`.
@@ -330,7 +330,6 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat", nu
 
     Parameters:
         directory_path (str): Path to the directory containing JSON files.
-        db_config (dict): Database configuration for PostgreSQL connection.
         json_type (str): Type of JSON files to process ("live_chat" or "info").
         num_workers (int): Number of parallel workers. Defaults to CPU count - 1.
     """
@@ -368,9 +367,9 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat", nu
 
     if json_type == "live_chat":
         # Process live chat files with multiprocessing
-        # Prepare arguments for each worker (file_path, db_config, file_num, total_files)
+        # Prepare arguments for each worker (file_path, file_num, total_files)
         worker_args = [
-            (file_path, db_config, i + 1, len(json_files))
+            (file_path, i + 1, len(json_files))
             for i, file_path in enumerate(json_files)
         ]
 
@@ -390,7 +389,7 @@ def parse_jsons_to_postgres(directory_path, db_config, json_type="live_chat", nu
         print("Processing info files sequentially...")
         for i, json_file in enumerate(json_files, 1):
             print(f"[{i}/{len(json_files)}] Processing: {os.path.basename(json_file)}")
-            parse_info_json_to_postgres(json_file, db_config)
+            parse_info_json_to_postgres(json_file)
 
         print(f"\n=== Processing Complete ===")
         print(f"Files processed: {len(json_files)}/{len(json_files)}")

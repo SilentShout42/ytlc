@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import re
 import argparse
+import psycopg2
 from rich.markdown import Markdown
 from rich.console import Console
 from rich.markup import escape
@@ -20,12 +21,30 @@ pd.options.mode.copy_on_write = True
 from parser import parse_jsons_to_postgres
 
 
-def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
+def get_db_connection_string():
+    """
+    Get a PostgreSQL connection string using libpq's standard precedence.
+    This follows the same order as psql and other PostgreSQL tools:
+    1. PG* environment variables (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD)
+    2. ~/.pgpass file
+    3. libpq defaults
+
+    Returns:
+        str: PostgreSQL connection string for use with pandas/SQLAlchemy.
+    """
+    # Let psycopg2/libpq resolve all parameters using standard precedence
+    conn = psycopg2.connect()
+    dsn_params = conn.get_dsn_parameters()
+    conn.close()
+
+    return f"postgresql://{dsn_params['user']}@{dsn_params['host']}:{dsn_params['port']}/{dsn_params['dbname']}"
+
+
+def search_messages(regex_patterns, window_size=60, min_matches=5):
     """
     Searches the PostgreSQL database for messages matching a list of regex patterns and finds windows of `window_size` seconds starting with the matching text.
 
     Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
         regex_patterns (list): List of regex patterns to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
@@ -36,8 +55,8 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
             - The timestamp of the most recent live chat message in the database, or None if no messages.
             - The total number of lines searched (number of rows in the DataFrame).
     """
-    # Create a connection string for pandas
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    # Get connection string using libpq's standard precedence (same as psql)
+    conn_str = get_db_connection_string()
 
     # Build PostgreSQL regex filter conditions (case-insensitive)
     # Note: PostgreSQL regex syntax (~*) is close to Python but not identical
@@ -155,19 +174,16 @@ def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
     return sorted(results, key=lambda x: x["timestamp"]), latest_live_chat_timestamp, total_lines_searched
 
 
-def count_missing_video_days(db_config):
+def count_missing_video_days():
     """
     Counts the number of days missing from the video_metadata table since 2024-05-25,
     exclusive of today. Returns the count and the list of missing dates.
-
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
 
     Returns:
         tuple: (int, list) The number of days missing video metadata and a list of missing dates.
                Returns (-1, []) in case of an error.
     """
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    conn_str = get_db_connection_string()
 
     # Define the fixed earliest date to consider
     effective_start_of_period = pd.Timestamp('2024-05-25').date()
@@ -210,19 +226,16 @@ def count_missing_video_days(db_config):
     return len(missing_dates), missing_dates
 
 
-def get_video_offsets(db_config):
+def get_video_offsets():
     """
     Builds a dictionary of video_id to offsets based on the minimum timestamp difference
     between live chat messages and video release timestamps.
 
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-
     Returns:
         dict: A dictionary where keys are video_id and values are offsets in seconds.
     """
-    # Create a connection string for pandas
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    # Get connection string using libpq's standard precedence
+    conn_str = get_db_connection_string()
 
     # Query to calculate offsets
     query = """
@@ -241,7 +254,6 @@ def get_video_offsets(db_config):
 
 
 def print_search_results_as_markdown(
-    db_config,
     regex_patterns,
     window_size=60,
     min_matches=5,
@@ -257,7 +269,6 @@ def print_search_results_as_markdown(
     Optionally includes Author and Message columns if debug is enabled.
 
     Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
         regex_patterns (list): List of regex patterns to search for in messages.
         window_size (int): Time window size in seconds for grouping messages.
         min_matches (int): Minimum number of matches required within a time window.
@@ -265,8 +276,8 @@ def print_search_results_as_markdown(
         output_file (str): Path to the file to write results to.
         debug (bool): Whether to include Author and Message columns in the output.
     """
-    results, latest_live_chat_timestamp, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
-    # offsets = get_video_offsets(db_config)
+    results, latest_live_chat_timestamp, total_lines_searched = search_messages(regex_patterns, window_size, min_matches)
+    # offsets = get_video_offsets()
 
     # Define headers as a list based on debug mode
     headers = ["Date", "Title", "Timestamp"]
@@ -346,7 +357,6 @@ def print_search_results_as_markdown(
 
 
 def plot_unique_chatters_over_time(
-    db_config,
     video_ids,
     window_size_minutes=5,
     output_file=None,
@@ -359,7 +369,6 @@ def plot_unique_chatters_over_time(
     in 5-minute windows. Uses Bokeh for better support of multiple independent plots.
 
     Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
         video_ids (list): List of video IDs to analyze.
         window_size_minutes (int): Size of time windows in minutes.
         output_file (str): Path to save the plot image (HTML format). If None, opens in browser.
@@ -367,8 +376,8 @@ def plot_unique_chatters_over_time(
         start_date (str or None): Filter VODs from this date (YYYY-MM-DD) when video_ids is empty.
         end_date (str or None): Filter VODs up to this date (YYYY-MM-DD) when video_ids is empty.
     """
-    # Create a connection string for pandas
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    # Get connection string using libpq's standard precedence
+    conn_str = get_db_connection_string()
 
     # Resolve video IDs from metadata when not provided
     if not video_ids:
@@ -881,16 +890,8 @@ def main():
 
     args = parser.parse_args()
 
-    db_config = {
-        "dbname": "ytlc",
-        "user": "ytlc",
-        "host": "localhost",
-        "port": 5432,
-    }
-
     if args.command == "search":
         print_search_results_as_markdown(
-            db_config,
             args.regex_patterns,
             window_size=60,
             min_matches=5,
@@ -907,10 +908,10 @@ def main():
 
         print(f"Parsing JSON files from: {args.data_dir}")
         parse_jsons_to_postgres(
-            args.data_dir, db_config, json_type="info"
+            args.data_dir, json_type="info"
         )
         parse_jsons_to_postgres(
-            args.data_dir, db_config, json_type="live_chat"
+            args.data_dir, json_type="live_chat"
         )
 
     elif args.command == "plot":
@@ -919,7 +920,6 @@ def main():
                 "Provide VIDEO_IDs or use --last-n/--start-date/--end-date to select videos."
             )
         plot_unique_chatters_over_time(
-            db_config,
             args.video_ids,
             window_size_minutes=args.window_size,
             output_file=args.output_file,
