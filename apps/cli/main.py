@@ -628,7 +628,14 @@ def plot_unique_chatters_over_time(
             toolbar_location="above",
             tools="pan,wheel_zoom,box_zoom,reset,save",
             output_backend="svg",
+            x_range=(-0.5, len(x_indices) - 0.5),
         )
+
+        # Remove padding around the plot
+        p.min_border_left = 0
+        p.min_border_right = 0
+        p.min_border_top = 0
+        p.min_border_bottom = 0
 
         # Configure x-axis
         p.xaxis.ticker = list(range(0, len(x_labels), tick_interval))
