@@ -210,6 +210,12 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
         x_range=(-0.5, len(x_indices) - 0.5),
     )
 
+    # Set y_range with extra space at the top for emoji
+    max_chatters = max(unique_chatters_per_window) if unique_chatters_per_window else 1
+    # Add 20% extra space above the highest bar to accommodate emoji
+    y_max = max_chatters * 1.2
+    p.y_range = Range1d(start=0, end=y_max)
+
     # Remove padding around the plot
     p.min_border_left = 0
     p.min_border_right = 0
@@ -222,7 +228,6 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
     p.xaxis.major_label_orientation = 0.785  # 45 degrees in radians
 
     # Set up the secondary y-axis for messages
-    max_chatters = max(unique_chatters_per_window) if unique_chatters_per_window else 1
     max_messages = max(messages_per_window) if messages_per_window else 1
 
     # Create a scaling factor for the secondary axis
@@ -307,7 +312,9 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
     )
 
     # Add secondary y-axis label using extra_y_ranges
-    p.extra_y_ranges = {"messages": Range1d(start=0, end=max_messages * 1.1)}
+    # Scale the secondary axis to match the primary y-range
+    secondary_y_max = max_messages * (y_max / max_chatters) if max_chatters > 0 else max_messages * 1.1
+    p.extra_y_ranges = {"messages": Range1d(start=0, end=secondary_y_max)}
     p.add_layout(LinearAxis(y_range_name="messages", axis_label=None), 'right')
     p.yaxis.visible = False
     if p.right:
