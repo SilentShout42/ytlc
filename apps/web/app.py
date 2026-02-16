@@ -192,22 +192,22 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
             emoji_image_urls.append('')
 
     # Calculate emoji size
-    bar_width_pixels = int((0.8 / num_windows) * 1200) if num_windows > 0 else 20
+    bar_width_pixels = int((0.8 / num_windows) * 800) if num_windows > 0 else 20
     emoji_size_pixels = max(20, min(60, bar_width_pixels))
     emoji_y_positions = unique_chatters_per_window
 
     # Create figure
     p = figure(
-        width=1200,
-        height=400,
+        width=800,
+        height=300,
         title=None,
         x_axis_label=None,
         y_axis_label=None,
         toolbar_location=None,
         tools="",
-        sizing_mode="stretch_width",
         output_backend="svg",
         x_range=(-0.5, len(x_indices) - 0.5),
+        sizing_mode="stretch_width",
     )
 
     # Set y_range with extra space at the top for emoji
