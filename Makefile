@@ -1,4 +1,4 @@
-.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean web help
+.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean web web-gunicorn help
 
 help:
 	@echo "ytlc - YouTube Live Chat Tool"
@@ -12,6 +12,7 @@ help:
 	@echo "  db-dump           Backup database to backups/ytlc-TIMESTAMP.sql"
 	@echo "  db-restore FILE=<path>  Restore database from backup file"
 	@echo "  web               Start the Flask web application"
+	@echo "  web-gunicorn      Start Flask with gunicorn (production)"
 	@echo "  clean             Remove Python cache files and __pycache__"
 	@echo "  help              Show this help message"
 	@echo ""
@@ -107,3 +108,10 @@ web:
 	@echo "📍 Web app will be available at: http://localhost:5000"
 	@echo "🛑 Press Ctrl+C to stop the server"
 	@cd apps/web && uv run python app.py
+
+web-gunicorn:
+	@echo "🌐 Starting Flask with gunicorn..."
+	@if [ ! -f .env ]; then echo "❌ Database not initialized. Run 'make init' first."; exit 1; fi
+	@echo "📍 Web app will be available at: http://localhost:8000"
+	@echo "🛑 Press Ctrl+C to stop the server"
+	@cd apps/web && uv run gunicorn --reload -b 127.0.0.1gst:8000 -w 4 --timeout 120 app:app

@@ -8,21 +8,28 @@ from bokeh.layouts import column
 import numpy as np
 import re
 from collections import Counter
+import psycopg2
 
 app = Flask(__name__)
 
-# Database configuration
-DB_CONFIG = {
-    'user': os.getenv('POSTGRES_USER', 'ytlc'),
-    'host': os.getenv('POSTGRES_HOST', 'localhost'),
-    'port': os.getenv('POSTGRES_PORT', '5432'),
-    'dbname': os.getenv('POSTGRES_DB', 'ytlc'),
-}
-
 
 def get_db_connection_string():
-    """Returns a PostgreSQL connection string for pandas."""
-    return f"postgresql://{DB_CONFIG['user']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+    """
+    Get a PostgreSQL connection string using libpq's standard precedence.
+    This follows the same order as psql and other PostgreSQL tools:
+    1. PG* environment variables (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD)
+    2. ~/.pgpass file
+    3. libpq defaults
+
+    Returns:
+        str: PostgreSQL connection string for use with pandas/SQLAlchemy.
+    """
+    # Let psycopg2/libpq resolve all parameters using standard precedence
+    conn = psycopg2.connect()
+    dsn_params = conn.get_dsn_parameters()
+    conn.close()
+
+    return f"postgresql://{dsn_params['user']}@{dsn_params['host']}:{dsn_params['port']}/{dsn_params['dbname']}"
 
 
 def extract_emojis(text):

@@ -16,6 +16,7 @@ samples
 # Environment variables and credentials
 .env
 .envrc
+.envrc*
 
 # Large data files
 **/*.live_chat.json
