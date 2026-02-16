@@ -56,6 +56,7 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
             message
         FROM live_chat
         WHERE video_id = '{video_id}'
+          AND video_offset_time_msec > 0
         ORDER BY video_offset_time_msec;
     """
 
