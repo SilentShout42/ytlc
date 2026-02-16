@@ -6,6 +6,24 @@
 <link href="https://cdn.bokeh.org/bokeh/release/bokeh-3.8.2.min.css" rel="stylesheet" type="text/css">
 <link href="https://cdn.bokeh.org/bokeh/release/bokeh-widgets-3.8.2.min.css" rel="stylesheet" type="text/css">
 <link href="https://cdn.bokeh.org/bokeh/release/bokeh-tables-3.8.2.min.css" rel="stylesheet" type="text/css">
+<style>
+    .video-title {
+        font-size: 1.1rem;
+        font-weight: 600;
+        margin-bottom: 0.1rem;
+    }
+    .video-date {
+        font-size: 0.9rem;
+        color: #6c757d;
+        margin-bottom: 0.75rem;
+    }
+    .plot-container {
+        margin-top: 0;
+    }
+    .plot-container .bk-root {
+        margin: 0;
+    }
+</style>
 {% endblock %}
 
 {% block extra_js %}
@@ -51,40 +69,41 @@ function onPlayerReady(event) {
     <a href="/" class="btn btn-secondary">&larr; Back to Videos</a>
 </div>
 
-<div class="card mb-4">
-    <div class="card-body">
-        <h1 class="card-title">{{ video.title }}</h1>
-        <p class="card-text">
-            <strong>Date:</strong> {{ video.date }}<br>
-            <strong>Video ID:</strong> {{ video.video_id }}<br>
-            <strong>YouTube Link:</strong> <a href="https://www.youtube.com/watch?v={{ video.video_id }}" target="_blank">Watch on YouTube</a>
-        </p>
-    </div>
+<div class="video-title">{{ video.title }}</div>
+<div class="video-date">{{ video.date }}</div>
+
+<div class="ratio ratio-16x9">
+    <div id="youtube-player"></div>
 </div>
 
-<div class="card mb-4">
-    <div class="card-body">
-        <h2 class="card-title">Video Player</h2>
-        <div class="ratio ratio-16x9">
-            <div id="youtube-player"></div>
-        </div>
-        <p class="text-muted mt-2 mb-0"><small>Click on the chart bars below to jump to that time in the video</small></p>
-    </div>
+{% if plot_div %}
+<div class="plot-container">
+    {{ plot_div|safe }}
 </div>
+{% else %}
+<div class="alert alert-info" role="alert">
+    No chat data available for this video.
+</div>
+{% endif %}
 
-<div class="card">
-    <div class="card-body">
-        <h2 class="card-title">Chat Activity</h2>
-        {% if plot_div %}
-        <div class="plot-container">
-            {{ plot_div|safe }}
-        </div>
-        {% else %}
-        <div class="alert alert-info" role="alert">
-            No chat data available for this video.
-        </div>
+<div class="form-check mt-2">
+    <input
+        class="form-check-input"
+        type="checkbox"
+        id="exclude-global-top"
+        {% if exclude_global_top_emoji %}checked{% endif %}
+        onchange="window.location='{{ url_for('video_detail', video_id=video.video_id) }}?exclude_global_top=' + (this.checked ? '1' : '0')"
+    >
+    <label class="form-check-label" for="exclude-global-top">
+        Exclude the most used emoji for the full stream
+        {% if global_top_emoji_url %}
+        <img
+            src="{{ global_top_emoji_url }}"
+            alt="{{ global_top_emoji }}"
+            style="height: 1.1em; width: 1.1em; margin-left: 0.35rem; vertical-align: -0.1em;"
+        >
         {% endif %}
-    </div>
+    </label>
 </div>
 {% endblock %}
 

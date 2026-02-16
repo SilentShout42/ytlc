@@ -463,6 +463,7 @@ def plot_unique_chatters_over_time(
         SELECT
             video_id,
             title,
+            EXTRACT(EPOCH FROM duration) * 1000 AS duration_msec,
             COALESCE(release_timestamp, timestamp) AS release_timestamp
         FROM video_metadata
         WHERE video_id IN ({placeholders});
@@ -475,13 +476,29 @@ def plot_unique_chatters_over_time(
         )
         video_titles = dict(zip(metadata_df['video_id'], metadata_df['title']))
         video_dates = dict(zip(metadata_df['video_id'], metadata_df['video_date']))
+        video_durations = dict(zip(metadata_df['video_id'], metadata_df['duration_msec']))
     except Exception as e:
         print(f"[yellow]Warning: Could not fetch video titles: {e}[/yellow]")
         video_titles = {}
         video_dates = {}
+        video_durations = {}
 
     # Convert video_offset_time_msec to seconds
     df['video_offset_time_sec'] = df['video_offset_time_msec'] / 1000
+
+    # Filter messages beyond video duration if available
+    filtered_df_list = []
+    for video_id in df['video_id'].unique():
+        video_df = df[df['video_id'] == video_id]
+        duration_msec = video_durations.get(video_id)
+        if duration_msec is not None and not pd.isna(duration_msec):
+            video_df = video_df[video_df['video_offset_time_msec'] <= duration_msec]
+        filtered_df_list.append(video_df)
+
+    if filtered_df_list:
+        df = pd.concat(filtered_df_list, ignore_index=True)
+    else:
+        df = pd.DataFrame()
 
     # Convert window size from minutes to seconds
     window_size_seconds = window_size_minutes * 60

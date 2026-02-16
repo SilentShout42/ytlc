@@ -114,4 +114,4 @@ web-gunicorn:
 	@if [ ! -f .env ]; then echo "❌ Database not initialized. Run 'make init' first."; exit 1; fi
 	@echo "📍 Web app will be available at: http://localhost:8000"
 	@echo "🛑 Press Ctrl+C to stop the server"
-	@cd apps/web && uv run gunicorn --reload -b 127.0.0.1gst:8000 -w 4 --timeout 120 app:app
+	@cd apps/web && uv run gunicorn --reload -b 127.0.0.1:8000 -w 4 --timeout 120 app:app

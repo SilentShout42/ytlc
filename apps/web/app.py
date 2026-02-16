@@ -1,5 +1,5 @@
 import os
-from flask import Flask, render_template, abort
+from flask import Flask, render_template, abort, request, make_response
 import pandas as pd
 from bokeh.embed import components
 from bokeh.plotting import figure
@@ -40,7 +40,7 @@ def extract_emojis(text):
     return emoji_pattern.findall(text)
 
 
-def generate_bokeh_plot(video_id, window_size_minutes=5):
+def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoji=True):
     """
     Generate a Bokeh plot for a specific video ID showing unique chatters over time.
     Returns (script, div) tuple for embedding in HTML template.
@@ -64,16 +64,17 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
         df = pd.read_sql_query(query, conn_str)
     except Exception as e:
         print(f"Error querying database: {e}")
-        return None, None
+        return None, None, None
 
     if df.empty:
-        return None, None
+        return None, None, None
 
     # Query to fetch video metadata
     metadata_query = f"""
         SELECT
             video_id,
             title,
+            EXTRACT(EPOCH FROM duration) * 1000 AS duration_msec,
             COALESCE(release_timestamp, timestamp) AS release_timestamp
         FROM video_metadata
         WHERE video_id = '{video_id}';
@@ -83,13 +84,19 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
         metadata_df = pd.read_sql_query(metadata_query, conn_str)
         video_title = metadata_df.iloc[0]['title'] if not metadata_df.empty else 'Unknown Title'
         video_date = pd.to_datetime(metadata_df.iloc[0]['release_timestamp'], utc=True).date() if not metadata_df.empty else None
+        video_duration_msec = metadata_df.iloc[0]['duration_msec'] if not metadata_df.empty and pd.notna(metadata_df.iloc[0]['duration_msec']) else None
     except Exception as e:
         print(f"Warning: Could not fetch video metadata: {e}")
         video_title = 'Unknown Title'
         video_date = None
+        video_duration_msec = None
 
     # Convert video_offset_time_msec to seconds
     df['video_offset_time_sec'] = df['video_offset_time_msec'] / 1000
+
+    # Filter messages beyond video duration if available
+    if video_duration_msec is not None and not df.empty:
+        df = df[df['video_offset_time_msec'] <= video_duration_msec]
 
     # Convert window size from minutes to seconds
     window_size_seconds = window_size_minutes * 60
@@ -99,6 +106,14 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
 
     # Create windows
     windows = np.arange(0, max_offset_sec + window_size_seconds, window_size_seconds)
+
+    # Determine overall top emoji to exclude from per-window candidates
+    all_stream_emojis = []
+    for msg in df['message'].dropna():
+        all_stream_emojis.extend(extract_emojis(str(msg)))
+    global_top_emoji = None
+    if all_stream_emojis:
+        global_top_emoji = Counter(all_stream_emojis).most_common(1)[0][0]
 
     # Count unique chatters and messages in each window
     unique_chatters_per_window = []
@@ -127,7 +142,10 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
         for msg in window_messages['message'].dropna():
             all_emojis.extend(extract_emojis(str(msg)))
 
-        # Find most common emoji
+        # Find most common emoji, excluding the overall top emoji
+        if exclude_global_top_emoji and global_top_emoji:
+            all_emojis = [emoji for emoji in all_emojis if emoji != global_top_emoji]
+
         if all_emojis:
             emoji_counts = Counter(all_emojis)
             most_common_emoji = emoji_counts.most_common(1)[0][0]
@@ -135,10 +153,9 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
         else:
             top_emojis.append('')
 
-        # Create label for this window (e.g., "0:00-5:00")
+        # Create label for this window using the start time (e.g., "0:00")
         start_hms = pd.to_datetime(window_start, unit='s').strftime('%H:%M:%S')
-        end_hms = pd.to_datetime(window_end, unit='s').strftime('%H:%M:%S')
-        window_labels.append(f"{start_hms}-{end_hms}")
+        window_labels.append(start_hms)
 
     total_unique_chatters = df['author'].nunique()
     total_messages = len(df)
@@ -180,15 +197,15 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
     emoji_y_positions = unique_chatters_per_window
 
     # Create figure
-    date_label = video_date.isoformat() if video_date else 'Unknown Date'
     p = figure(
         width=1200,
         height=400,
-        title=f"{video_title}\n{date_label} | {total_unique_chatters} unique chatters | {total_messages} messages",
-        x_axis_label=f"Time Window ({window_size_minutes} min intervals)",
-        y_axis_label="Unique Chatters",
-        toolbar_location="above",
-        tools="pan,wheel_zoom,box_zoom,reset,save",
+        title=None,
+        x_axis_label=None,
+        y_axis_label=None,
+        toolbar_location=None,
+        tools="",
+        sizing_mode="fixed",
         output_backend="svg",
     )
 
@@ -284,7 +301,10 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
 
     # Add secondary y-axis label using extra_y_ranges
     p.extra_y_ranges = {"messages": Range1d(start=0, end=max_messages * 1.1)}
-    p.add_layout(LinearAxis(y_range_name="messages", axis_label="Messages"), 'right')
+    p.add_layout(LinearAxis(y_range_name="messages", axis_label=None), 'right')
+    p.yaxis.visible = False
+    if p.right:
+        p.right[0].visible = False
 
     # Add unified hover tool showing both metrics (attach only to bars to avoid duplicates)
     hover = HoverTool(
@@ -317,15 +337,11 @@ def generate_bokeh_plot(video_id, window_size_minutes=5):
     p.add_tools(tap_tool)
 
     # Configure legend
-    p.legend.location = "top_right"
-    p.legend.click_policy = "hide"
-
-    # Configure title font size
-    p.title.text_font_size = "14pt"
+    p.legend.visible = False
 
     # Return script and div for embedding
     script, div = components(p)
-    return script, div
+    return script, div, global_top_emoji
 
 
 @app.route('/')
@@ -378,15 +394,41 @@ def video_detail(video_id):
         print(f"Error querying database: {e}")
         abort(404)
 
+    exclude_param = request.args.get("exclude_global_top")
+    if exclude_param is None:
+        exclude_param = request.cookies.get("exclude_global_top", "1")
+    exclude_global_top_emoji = exclude_param != "0"
+
     # Generate Bokeh plot
-    script, div = generate_bokeh_plot(video_id)
+    script, div, global_top_emoji = generate_bokeh_plot(
+        video_id,
+        exclude_global_top_emoji=exclude_global_top_emoji,
+    )
 
     if script is None or div is None:
         # No chat data available
         script = ""
         div = "<p>No chat data available for this video.</p>"
+        global_top_emoji = None
 
-    return render_template('video.html', video=video, plot_script=script, plot_div=div)
+    global_top_emoji_url = None
+    if global_top_emoji:
+        emoji_filename = global_top_emoji.strip(':') + '.png'
+        global_top_emoji_url = f"/static/img/{emoji_filename}"
+
+    response = make_response(
+        render_template(
+            'video.html',
+            video=video,
+            plot_script=script,
+            plot_div=div,
+            exclude_global_top_emoji=exclude_global_top_emoji,
+            global_top_emoji=global_top_emoji,
+            global_top_emoji_url=global_top_emoji_url,
+        )
+    )
+    response.set_cookie("exclude_global_top", "1" if exclude_global_top_emoji else "0")
+    return response
 
 
 if __name__ == '__main__':
