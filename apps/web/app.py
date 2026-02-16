@@ -205,7 +205,7 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
         y_axis_label=None,
         toolbar_location=None,
         tools="",
-        sizing_mode="fixed",
+        sizing_mode="stretch_width",
         output_backend="svg",
     )
 
