@@ -12,13 +12,16 @@
         flex-direction: column;
         min-height: 100vh;
     }
-    .navbar {
-        flex-shrink: 0;
-    }
     .container {
         flex: 1;
         display: flex;
         flex-direction: column;
+    }
+    .video-toolbar {
+        display: flex;
+        justify-content: flex-start;
+        margin: 0 auto 0.35rem;
+        width: 90%;
     }
     .video-container {
         flex: 1;
@@ -56,11 +59,11 @@
     .plot-container .bk-root {
         margin: 0;
         height: 100%;
-            width: 100%;
+        width: 100%;
     }
-        .plot-container .bk-root .bk-plotdiv {
-            width: 100% !important;
-        }
+    .plot-container .bk-root .bk-plotdiv {
+        width: 100% !important;
+    }
 </style>
 {% endblock %}
 
@@ -112,10 +115,9 @@ window.addEventListener('load', function() {
 {% endblock %}
 
 {% block content %}
-<div class="mb-1">
-    <a href="/" class="btn btn-secondary btn-sm">&larr; Back to Videos</a>
+<div class="video-toolbar">
+    <a href="/" class="btn btn-outline-secondary btn-sm">&larr; Back to Videos</a>
 </div>
-
 <div class="video-container">
     <div class="video-title">{{ video.title }}</div>
     <div class="video-date">{{ video.date }}</div>
@@ -141,10 +143,11 @@ window.addEventListener('load', function() {
             class="form-check-input"
             type="checkbox"
             id="exclude-global-top"
+            data-video-url="{{ url_for('video_detail', video_id=video.video_id) }}"
             {% if exclude_global_top_emoji %}checked{% endif %}
             onchange="
                 sessionStorage.setItem('scrollPosition', window.scrollY);
-                const baseUrl = {{ url_for('video_detail', video_id=video.video_id) | tojson }};
+                const baseUrl = this.dataset.videoUrl;
                 const url = baseUrl + '?exclude_global_top=' + (this.checked ? '1' : '0');
                 window.location = url;
             "
