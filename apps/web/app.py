@@ -199,7 +199,7 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
     # Create figure
     p = figure(
         width=800,
-        height=300,
+        height=200,
         title=None,
         x_axis_label=None,
         y_axis_label=None,
@@ -207,7 +207,7 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
         tools="",
         output_backend="svg",
         x_range=(-0.5, len(x_indices) - 0.5),
-        sizing_mode="stretch_width",
+        sizing_mode="stretch_both",
     )
 
     # Set y_range with extra space at the top for emoji
@@ -226,6 +226,10 @@ def generate_bokeh_plot(video_id, window_size_minutes=5, exclude_global_top_emoj
     p.xaxis.ticker = list(range(0, len(window_labels), tick_interval))
     p.xaxis.major_label_overrides = {i: window_labels[i] for i in range(0, len(window_labels), tick_interval)}
     p.xaxis.major_label_orientation = 0.785  # 45 degrees in radians
+    p.xaxis.major_label_text_font_size = "0pt"
+    p.xaxis.major_tick_line_color = None
+    p.xaxis.minor_tick_line_color = None
+    p.xaxis.axis_line_color = None
 
     # Set up the secondary y-axis for messages
     max_messages = max(messages_per_window) if messages_per_window else 1
