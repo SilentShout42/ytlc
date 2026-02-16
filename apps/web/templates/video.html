@@ -81,6 +81,18 @@
     .plot-container .bk-root .bk-plotdiv {
         width: 100% !important;
     }
+    .form-check {
+        position: relative;
+        z-index: 10;
+        pointer-events: auto;
+        cursor: pointer;
+    }
+    .form-check-input {
+        cursor: pointer;
+    }
+    .form-check-label {
+        cursor: pointer;
+    }
 </style>
 {% endblock %}
 
@@ -162,12 +174,6 @@ window.addEventListener('load', function() {
             id="exclude-global-top"
             data-video-url="{{ url_for('video_detail', video_id=video.video_id) }}"
             {% if exclude_global_top_emoji %}checked{% endif %}
-            onchange="
-                sessionStorage.setItem('scrollPosition', window.scrollY);
-                const baseUrl = this.dataset.videoUrl;
-                const url = baseUrl + '?exclude_global_top=' + (this.checked ? '1' : '0');
-                window.location = url;
-            "
         >
         <label class="form-check-label" for="exclude-global-top">
             Exclude the most used emoji for the full stream
@@ -180,6 +186,17 @@ window.addEventListener('load', function() {
             {% endif %}
         </label>
         </div>
+        
+        <script>
+        // Handle exclude global top emoji checkbox
+        document.getElementById('exclude-global-top').addEventListener('change', function() {
+            sessionStorage.setItem('scrollPosition', window.scrollY);
+            const baseUrl = this.dataset.videoUrl;
+            const excludeParam = this.checked ? '1' : '0';
+            const url = baseUrl + '?exclude_global_top=' + excludeParam;
+            window.location.href = url;
+        });
+        </script>
     </div>
 </div>
 {% endblock %}
