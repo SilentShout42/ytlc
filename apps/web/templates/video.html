@@ -61,6 +61,15 @@ function onYouTubeIframeAPIReady() {
 function onPlayerReady(event) {
     console.log('YouTube player ready with video: ' + videoIdToLoad);
 }
+
+// Restore scroll position after page load
+window.addEventListener('load', function() {
+    const scrollPosition = sessionStorage.getItem('scrollPosition');
+    if (scrollPosition !== null) {
+        window.scrollTo(0, parseInt(scrollPosition));
+        sessionStorage.removeItem('scrollPosition');
+    }
+});
 </script>
 {% endblock %}
 
@@ -92,7 +101,10 @@ function onPlayerReady(event) {
         type="checkbox"
         id="exclude-global-top"
         {% if exclude_global_top_emoji %}checked{% endif %}
-        onchange="window.location='{{ url_for('video_detail', video_id=video.video_id) }}?exclude_global_top=' + (this.checked ? '1' : '0')"
+        onchange="
+            sessionStorage.setItem('scrollPosition', window.scrollY);
+            window.location='{{ url_for('video_detail', video_id=video.video_id) }}?exclude_global_top=' + (this.checked ? '1' : '0');
+        "
     >
     <label class="form-check-label" for="exclude-global-top">
         Exclude the most used emoji for the full stream
