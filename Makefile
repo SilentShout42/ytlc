@@ -1,4 +1,4 @@
-.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean help
+.PHONY: init destroy db-up db-down db-reset db-dump db-restore clean build release help
 
 help:
 	@echo "ytlc - YouTube Live Chat Tool"
@@ -11,9 +11,17 @@ help:
 	@echo "  db-reset          Stop database and remove volume"
 	@echo "  db-dump           Backup database to backups/ytlc-TIMESTAMP.sql"
 	@echo "  db-restore FILE=<path>  Restore database from backup file"
-	@echo "  clean             Remove Python cache files and __pycache__"
+	@echo "  build             Build the Rust binary (debug)"
+	@echo "  release           Build the Rust binary (optimized)"
+	@echo "  clean             Remove build artifacts and Python cache"
 	@echo "  help              Show this help message"
 	@echo ""
+
+build:
+	cargo build
+
+release:
+	cargo build --release
 
 init: scripts/setup-db.sh
 	@echo "🚀 Running first-time setup..."
@@ -93,7 +101,8 @@ db-restore:
 	@echo "✅ Database restored from $(FILE)"
 
 clean:
-	@echo "🧹 Cleaning Python cache..."
+	@echo "🧹 Cleaning build artifacts and Python cache..."
+	@cargo clean 2>/dev/null || true
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete || true
 	@find . -type f -name ".coverage*" -delete || true

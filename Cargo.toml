@@ -1,0 +1,19 @@
+[package]
+name = "ytlc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ytlc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+rayon = "1"
+regex = "1"
+serde_json = "1"
+termimad = "0.23"
+walkdir = "2"
