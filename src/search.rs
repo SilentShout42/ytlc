@@ -49,20 +49,24 @@ pub fn search_messages(
 ) -> Result<(Vec<SearchRow>, Option<DateTime<Utc>>, i64)> {
     let mut client = Client::connect(&db_config.conn_string(), NoTls)?;
 
-    // Build WHERE clause with DB-level regex filtering (case-insensitive ~*)
-    // Patterns come from CLI args (not external input), single-quote escaping is sufficient
-    let conditions: Vec<String> = regex_patterns
-        .iter()
-        .map(|p| format!("lc.message ~* '{}'", p.replace('\'', "''")))
+    // Use regexp_like($n, pattern, 'i') so patterns are proper query parameters —
+    // no string interpolation, no escaping, and ARE flags like (?i) \s \d work correctly.
+    let placeholders: Vec<String> = (1..=regex_patterns.len())
+        .map(|i| format!("regexp_like(lc.message, ${}, 'i')", i))
         .collect();
-    let where_clause = format!("WHERE {}", conditions.join(" OR "));
+    let where_clause = format!("WHERE {}", placeholders.join(" OR "));
 
     let query = format!(
         "{} {} ORDER BY lc.video_id, lc.timestamp",
         FETCH_QUERY, where_clause
     );
 
-    let data: Vec<SearchRow> = match client.query(&query, &[]) {
+    let params: Vec<&(dyn postgres::types::ToSql + Sync)> = regex_patterns
+        .iter()
+        .map(|p| p as &(dyn postgres::types::ToSql + Sync))
+        .collect();
+
+    let data: Vec<SearchRow> = match client.query(&query, &params) {
         Ok(rows) => rows.iter().map(map_row).collect(),
         Err(e) => {
             eprintln!("Database-level regex filtering failed: {}", e);
