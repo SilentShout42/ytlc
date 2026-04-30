@@ -191,9 +191,13 @@ pub fn print_search_results(
     lines.push(String::new());
     lines.push("| Parameter       | Value |".to_string());
     lines.push("|-----------------|-------|".to_string());
+    let display_patterns: Vec<String> = regex_patterns
+        .iter()
+        .map(|p| p.replace('|', r"\|"))
+        .collect();
     lines.push(format!(
         "| Search Patterns | `{}` |",
-        regex_patterns.join(", ")
+        display_patterns.join(", ")
     ));
     lines.push(format!("| Window Size     | {} seconds |", window_size));
     lines.push(format!("| Minimum Matches | {} |", min_matches));
