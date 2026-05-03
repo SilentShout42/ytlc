@@ -25,3 +25,5 @@ samples
 # Include specific SQL files
 !saved_queries/**/*.sql
 !misc/**/*.sql
+
+target/
