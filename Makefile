@@ -6,7 +6,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build     Build the Rust binary (debug)"
 	@echo "  release   Build the Rust binary (optimized)"
-	@echo "  clean     Remove build artifacts and Python cache"
+	@echo "  clean     Remove build artifacts"
 	@echo "  help      Show this help message"
 	@echo ""
 
@@ -17,8 +17,6 @@ release:
 	cargo build --release
 
 clean:
-	@echo "Cleaning build artifacts and Python cache..."
+	@echo "Cleaning build artifacts..."
 	@cargo clean 2>/dev/null || true
-	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	@find . -type f -name "*.pyc" -delete || true
 	@echo "Done"
