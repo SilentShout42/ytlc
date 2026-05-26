@@ -1,8 +1,10 @@
 use crate::DbConfig;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use postgres::{Client, NoTls};
 use regex::Regex;
+
+use rusqlite::Row;
+use rusqlite::types::Value as SqlValue;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -20,7 +22,9 @@ const FETCH_QUERY: &str = r#"
     SELECT
         lc.timestamp,
         lc.video_id,
-        CEIL(EXTRACT(EPOCH FROM AGE(lc.timestamp, vm.release_timestamp)))::bigint,
+        CAST(ROUND(
+            (julianday(lc.timestamp) - julianday(vm.release_timestamp)) * 86400
+        ) AS INTEGER),
         lc.message,
         lc.author,
         vm.title,
@@ -29,16 +33,36 @@ const FETCH_QUERY: &str = r#"
     JOIN video_metadata vm ON lc.video_id = vm.video_id
 "#;
 
-fn map_row(row: &postgres::Row) -> SearchRow {
-    SearchRow {
-        timestamp: row.get(0),
-        video_id: row.get(1),
-        video_offset_time_seconds: row.get::<_, i64>(2),
-        message: row.get(3),
-        author: row.get(4),
-        title: row.get(5),
-        video_offset_time_msec: row.get(6),
-    }
+fn map_row(row: &Row<'_>) -> rusqlite::Result<SearchRow> {
+    Ok(SearchRow {
+        timestamp: row.get(0)?,
+        video_id: row.get(1)?,
+        video_offset_time_seconds: row.get::<_, i64>(2).unwrap_or(0),
+        message: row.get(3)?,
+        author: row.get(4)?,
+        title: row.get(5)?,
+        video_offset_time_msec: row.get(6).ok(),
+    })
+}
+
+/// Fetch total row count from live_chat table
+fn fetch_total(conn: &rusqlite::Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM live_chat",
+        [],
+        |row| row.get(0),
+    )
+    .with_context(|| "Failed to count live_chat rows")
+}
+
+/// Fetch the latest timestamp from live_chat table
+fn fetch_latest(conn: &rusqlite::Connection) -> Result<Option<DateTime<Utc>>> {
+    conn.query_row(
+        "SELECT MAX(timestamp) FROM live_chat",
+        [],
+        |row| row.get(0),
+    )
+    .with_context(|| "Failed to get latest timestamp")
 }
 
 pub fn search_messages(
@@ -47,53 +71,71 @@ pub fn search_messages(
     window_size: i64,
     min_matches: usize,
 ) -> Result<(Vec<SearchRow>, Option<DateTime<Utc>>, i64)> {
-    let mut client = Client::connect(&db_config.conn_string(), NoTls)?;
+    use rusqlite::Connection;
+    let conn_path = db_config.connect_path()?;
+    let conn = Connection::open(conn_path)
+        .context("Failed to open SQLite database")?;
 
-    // Use regexp_like($n, pattern, 'i') so patterns are proper query parameters —
-    // no string interpolation, no escaping, and ARE flags like (?i) \s \d work correctly.
-    let placeholders: Vec<String> = (1..=regex_patterns.len())
-        .map(|i| format!("regexp_like(lc.message, ${}, 'i')", i))
-        .collect();
-    let where_clause = format!("WHERE {}", placeholders.join(" OR "));
-
-    let query = format!(
-        "{} {} ORDER BY lc.video_id, lc.timestamp",
-        FETCH_QUERY, where_clause
-    );
-
-    let params: Vec<&(dyn postgres::types::ToSql + Sync)> = regex_patterns
+    // Compile regex patterns for Rust-level filtering (fallback)
+    let match_patterns: Vec<Regex> = regex_patterns
         .iter()
-        .map(|p| p as &(dyn postgres::types::ToSql + Sync))
+        .map(|p| Regex::new(&format!("(?i){}", p)))
+        .collect::<Result<_, _>>()
+        .context("Failed to compile regex patterns")?;
+
+    // Build SQLite LIKE params with % wildcards
+    let like_params: Vec<SqlValue> = regex_patterns
+        .iter()
+        .map(|p| format!("%{}%", p).into())
         .collect();
 
-    let data: Vec<SearchRow> = match client.query(&query, &params) {
-        Ok(rows) => rows.iter().map(map_row).collect(),
-        Err(e) => {
-            eprintln!("Database-level regex filtering failed: {}", e);
-            eprintln!("Falling back to full scan with Rust-level filtering...");
-            let fallback = format!(
-                "{} ORDER BY lc.video_id, lc.timestamp",
-                FETCH_QUERY
-            );
-            let rows = client.query(&fallback, &[])?;
-            let compiled: Vec<Regex> = regex_patterns
-                .iter()
-                .map(|p| Regex::new(&format!("(?i){}", p)))
-                .collect::<Result<_, _>>()?;
-            rows.iter()
-                .map(map_row)
-                .filter(|r| compiled.iter().any(|re| re.is_match(&r.message)))
-                .collect()
+    // Try the filtered query first (LIKE can speed up the common case where
+    // the pattern contains a simple substring), fall back to full scan if needed.
+    let data: Vec<SearchRow> = {
+        // Build WHERE clause with SQLite LIKE
+        let like_placeholders: String = (0..like_params.len())
+            .map(|i| format!("lc.message LIKE ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let query = format!(
+            "{} WHERE {} ORDER BY lc.video_id, lc.timestamp",
+            FETCH_QUERY, like_placeholders
+        );
+
+        let mut data: Vec<SearchRow> = Vec::new();
+
+        // Try filtered query
+        if let Ok(mut stmt) = conn.prepare(&query) {
+            if let Ok(rows_iter) = stmt.query_map(
+                rusqlite::params_from_iter(like_params.iter().cloned()),
+                map_row,
+            ) {
+                data = rows_iter
+                    .flatten()
+                    .filter(|r| match_patterns.iter().any(|re| re.is_match(&r.message)))
+                    .collect();
+            }
         }
+
+        // If the LIKE filter returned no rows (e.g. the pattern uses regex syntax
+        // that LIKE doesn't understand), fall back to full scan + in-memory regex
+        if data.is_empty() {
+            if let Ok(mut stmt) = conn.prepare(FETCH_QUERY) {
+                if let Ok(rows_iter) = stmt.query_map([], map_row) {
+                    data = rows_iter
+                        .flatten()
+                        .filter(|r| match_patterns.iter().any(|re| re.is_match(&r.message)))
+                        .collect();
+                }
+            }
+        }
+
+        data
     };
 
-    let total: i64 = client
-        .query_one("SELECT COUNT(*) FROM live_chat", &[])?
-        .get(0);
-
-    let latest: Option<DateTime<Utc>> = client
-        .query_one("SELECT MAX(timestamp) FROM live_chat", &[])?
-        .get(0);
+    // Compute total and latest
+    let total = fetch_total(&conn)?;
+    let latest = fetch_latest(&conn)?;
 
     // Group by video_id, sort each group by timestamp, then apply windowing
     let mut groups: HashMap<String, Vec<SearchRow>> = HashMap::new();
@@ -112,11 +154,11 @@ pub fn search_messages(
                 .filter(|r| r.timestamp >= row.timestamp && r.timestamp < window_end)
                 .count();
             if count >= min_matches {
-                let add = results.last().map_or(true, |last| {
-                    last.video_id != video_id
-                        || (row.timestamp - last.timestamp).num_seconds() >= window_size
+                let already_added = results.last().map_or(false, |last| {
+                    last.video_id == video_id
+                        && (row.timestamp - last.timestamp).num_seconds() < window_size
                 });
-                if add {
+                if !already_added {
                     results.push(group[i].clone());
                 }
             }
@@ -230,25 +272,25 @@ pub fn print_search_results(
 }
 
 pub fn db_check(db_config: &DbConfig) -> Result<()> {
-    println!(
-        "Connecting to PostgreSQL at {}:{}/{} as {}...",
-        db_config.host, db_config.port, db_config.dbname, db_config.user
-    );
+    let conn_path = db_config.connect_path()?;
+    println!("Opening SQLite database at {}...", conn_path.display());
 
-    let mut client = Client::connect(&db_config.conn_string(), NoTls)
-        .context("Failed to connect to database")?;
+    use rusqlite::Connection;
+    let conn = Connection::open(&conn_path)
+        .context("Failed to open database")?;
 
-    let version: String = client.query_one("SELECT version()", &[])?.get(0);
-    println!("OK — {}", version);
+    let version: String = conn
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .context("Failed to get SQLite version")?;
+    println!("OK — SQLite {}", version);
 
     let tables = [
         ("live_chat", "SELECT COUNT(*) FROM live_chat"),
         ("video_metadata", "SELECT COUNT(*) FROM video_metadata"),
     ];
     for (name, query) in &tables {
-        match client.query_one(*query, &[]) {
-            Ok(row) => {
-                let count: i64 = row.get(0);
+        match conn.query_row(*query, [], |row| row.get::<_, i64>(0)) {
+            Ok(count) => {
                 println!("  {}: {} rows", name, count);
             }
             Err(e) => println!("  {}: error — {}", name, e),

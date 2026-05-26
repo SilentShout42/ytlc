@@ -1,355 +1,293 @@
-import json
 import os
-import pandas as pd
 import re
+import sqlite3
 import argparse
+from datetime import datetime, timezone, timedelta, date
+from collections import defaultdict
+from math import ceil
 from rich.markdown import Markdown
-from rich.console import Console
 from rich.markup import escape
 from rich import print
-from math import ceil
 
-# Enable pandas copy-on-write mode for memory optimization
-pd.options.mode.copy_on_write = True
-
-from parser import parse_jsons_to_postgres
+from parser import parse_jsons_to_sqlite
 
 
-def search_messages(db_config, regex_patterns, window_size=60, min_matches=5):
+def sqlite_query(db_path: str, sql: str, params: tuple = ()) -> list[dict]:
+    """Execute a SQL query and return results as a list of dicts."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(sql, params)
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return results
+
+
+def search_messages(
+    db_path: str,
+    regex_patterns: list[str],
+    window_size: int = 60,
+    min_matches: int = 5,
+) -> tuple[list[dict], str | None, int]:
     """
-    Searches the PostgreSQL database for messages matching a list of regex patterns and finds windows of `window_size` seconds starting with the matching text.
+    Search the SQLite database for messages matching regex patterns.
+    Uses LIKE for initial pruning, then in-memory regex filter, then
+    windowing (≥ min_matches per window_size per video).
 
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-        regex_patterns (list): List of regex patterns to search for in messages.
-        window_size (int): Time window size in seconds for grouping messages.
-        min_matches (int): Minimum number of matches required within a time window.
-
-    Returns:
-        tuple: (list, pd.Timestamp or None, int):
-            - A list of dictionaries containing grouped search results.
-            - The timestamp of the most recent live chat message in the database, or None if no messages.
-            - The total number of lines searched (number of rows in the DataFrame).
+    Returns: (results, latest_timestamp_str, total_lines)
     """
-    # Create a connection string for pandas
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
+    like_params: list[str] = [f"%{p}%" for p in regex_patterns]
+    like_placeholders = " OR ".join(
+        f"lc.message LIKE ?{i + 1}" for i in range(len(like_params))
+    )
 
-    # Build PostgreSQL regex filter conditions (case-insensitive)
-    # Note: PostgreSQL regex syntax (~*) is close to Python but not identical
-    # This filters at the database level using the gin_trgm_ops index for performance
-    regex_conditions = " OR ".join([
-        f"lc.message ~* '{pattern.replace(chr(39), chr(39)*2)}'"  # Escape single quotes
-        for pattern in regex_patterns
-    ])
-
-    # Query to fetch messages and metadata with database-level filtering
-    # This uses the trigram index to efficiently find matching messages
-    query = f"""
+    fetch_query = f"""
         SELECT
             lc.timestamp,
             lc.video_id,
-            ceil(extract(epoch from age(lc.timestamp, vm.release_timestamp))) as video_offset_time_seconds,
+            CAST(ROUND(
+                (julianday(lc.timestamp) - julianday(vm.release_timestamp)) * 86400
+            ) AS INTEGER) AS video_offset_time_seconds,
             lc.message,
             lc.author,
-            lc.author_channel_id,
-            vm.release_timestamp,
             vm.title,
             lc.video_offset_time_msec
         FROM live_chat lc
         JOIN video_metadata vm ON lc.video_id = vm.video_id
-        WHERE {regex_conditions}
-        ORDER BY lc.video_id, lc.timestamp;
     """
 
-    # Use pandas to read directly from the database into a DataFrame
-    # This only fetches rows matching the regex patterns, not the entire table
-    db_filtered = False
-    try:
-        df = pd.read_sql_query(query, conn_str)
-        db_filtered = True
-    except Exception as e:
-        # If PostgreSQL regex fails, fall back to fetching all rows
-        print(f"Database-level regex filtering failed: {e}")
-        print("Falling back to Python-level filtering (this may be slower)...")
-        query_fallback = """
-            SELECT
-                lc.timestamp,
-                lc.video_id,
-                ceil(extract(epoch from age(lc.timestamp, vm.release_timestamp))) as video_offset_time_seconds,
-                lc.message,
-                lc.author,
-                lc.author_channel_id,
-                vm.release_timestamp,
-                vm.title,
-                lc.video_offset_time_msec
-            FROM live_chat lc
-            JOIN video_metadata vm ON lc.video_id = vm.video_id;
-        """
-        df = pd.read_sql_query(query_fallback, conn_str)
+    # Compile patterns for in-memory filtering
+    match_patterns = [re.compile(f"(?i){p}") for p in regex_patterns]
 
-    # Query for the total number of messages in the database (what was actually searched)
+    data: list[dict] = []
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
     try:
-        total_lines_query = "SELECT COUNT(*) as total_count FROM live_chat;"
-        total_lines_df = pd.read_sql_query(total_lines_query, conn_str)
-        total_lines_searched = int(total_lines_df.loc[0, 'total_count']) if not total_lines_df.empty else len(df)
+        # LIKE filter is a fast pre-filter; LIKE can't handle full regex
+        # syntax (e.g. "((bless (yo)?u)\|gesund" is literal for LIKE), so
+        # the result set is empty when the pattern is pure regex — we then
+        # fall back to the full scan below.
+        filtered_query = f"{fetch_query} WHERE {like_placeholders} ORDER BY lc.video_id, lc.timestamp"
+        rows = conn.execute(filtered_query, like_params).fetchall()
+        data = [dict(r) for r in rows]
+        data = [r for r in data if any(p.search(r["message"]) for p in match_patterns)]
     except Exception:
-        # Fallback to the length of the dataframe
-        total_lines_searched = len(df)
+        pass
 
-    # Query for the latest live chat message in the database
-    latest_live_chat_timestamp = None
-    try:
-        latest_chat_query = "SELECT MAX(timestamp) as latest_chat FROM live_chat;"
-        latest_chat_df = pd.read_sql_query(latest_chat_query, conn_str)
-        if not latest_chat_df.empty and pd.notnull(latest_chat_df.loc[0, 'latest_chat']):
-            latest_live_chat_timestamp = latest_chat_df.loc[0, 'latest_chat']
-    except Exception:
-        latest_live_chat_timestamp = None
+    # Fall back to full scan + in-memory regex
+    if not data:
+        rows = conn.execute(fetch_query).fetchall()
+        data = [dict(r) for r in rows]
+        data = [r for r in data if any(p.search(r["message"]) for p in match_patterns)]
 
-    # Ensure video_offset_time_seconds is an integer
-    df["video_offset_time_seconds"] = (
-        df["video_offset_time_seconds"].fillna(0).astype(int)
-    )
+    total_rows = conn.execute("SELECT COUNT(*) FROM live_chat").fetchone()[0]
+    latest_row = conn.execute("SELECT MAX(timestamp) FROM live_chat").fetchone()
+    latest_str = latest_row[0] if latest_row[0] else None
+    conn.close()
 
-    # If database-level filtering failed, apply Python regex filtering now
-    if not db_filtered:
-        patterns = [re.compile(pattern) for pattern in regex_patterns]
-        df["matches"] = df["message"].apply(
-            lambda x: any(pattern.search(x) for pattern in patterns)
-        )
-        df = df[df["matches"]]
+    # Windowing: group by video_id, find windows with >= min_matches
+    groups: list[tuple[str, list[dict]]] = []
+    seen: set[str] = set()
+    for r in data:
+        if r["video_id"] not in seen:
+            seen.add(r["video_id"])
+            groups.append((r["video_id"], []))
+        groups[-1][1].append(r)
 
-    # Group matching rows by video_id and sort by timestamp
-    grouped = df.groupby("video_id", group_keys=False)
-    results = []
-
-    for video_id, group in grouped:
-        group = group.sort_values("timestamp")
-        for i, match_row in group.iterrows():
-            start_time = match_row["timestamp"]
-            end_time = start_time + pd.Timedelta(seconds=window_size)
-
-            # Filter for matches within the window
-            window_df = group[
-                (group["timestamp"] >= start_time) & (group["timestamp"] < end_time)
+    results: list[dict] = []
+    for video_id, group_rows in groups:
+        group_rows.sort(key=lambda r: r["timestamp"])
+        for i in range(len(group_rows)):
+            start_ts = datetime.fromisoformat(group_rows[i]["timestamp"])
+            end_ts = start_ts + timedelta(seconds=window_size)
+            window_rows = [
+                r for r in group_rows[i:]
+                if datetime.fromisoformat(r["timestamp"]) >= start_ts
+                and datetime.fromisoformat(r["timestamp"]) < end_ts
             ]
+            if len(window_rows) >= min_matches:
+                last = results[-1] if results else None
+                already = (
+                    last is not None
+                    and last["video_id"] == video_id
+                    and (start_ts - datetime.fromisoformat(last["timestamp"])).total_seconds()
+                    < window_size
+                ) if last else False
+                if not already:
+                    results.append(group_rows[i])
 
-            # Ensure min_matches and enforce window_size gap
-            if len(window_df) >= min_matches:
-                if not results or (
-                    results[-1]["video_id"] != video_id
-                    or (
-                        match_row["timestamp"] - results[-1]["timestamp"]
-                    ).total_seconds()
-                    >= window_size
-                ):
-                    first_message = window_df.iloc[0].to_dict()
-                    results.append(first_message)
-
-    # Ensure results are sorted by timestamp (oldest to newest) before returning
-    return sorted(results, key=lambda x: x["timestamp"]), latest_live_chat_timestamp, total_lines_searched
+    results.sort(key=lambda r: r["timestamp"])
+    return results, latest_str, total_rows
 
 
-def count_missing_video_days(db_config):
-    """
-    Counts the number of days missing from the video_metadata table since 2024-05-25,
-    exclusive of today. Returns the count and the list of missing dates.
+def count_missing_video_days(db_path: str) -> tuple[int, list]:
+    """Count days with no videos since 2024-05-25."""
+    effective_start = date(2024, 5, 25)
+    today = date.today()
+    end_of_period = today - timedelta(days=1)
 
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-
-    Returns:
-        tuple: (int, list) The number of days missing video metadata and a list of missing dates.
-               Returns (-1, []) in case of an error.
-    """
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
-
-    # Define the fixed earliest date to consider
-    effective_start_of_period = pd.Timestamp('2024-05-25').date()
-
-    # Calculate the date range, exclusive of today
-    today_date = pd.Timestamp.today().date()
-    # The period ends on yesterday
-    end_of_period = today_date - pd.Timedelta(days=1)
-
-    # Ensure end_of_period is not before effective_start_of_period
-    if end_of_period < effective_start_of_period:
-        print(f"The period ending yesterday ({end_of_period.strftime('%Y-%m-%d')}) is before the earliest allowed start date ({effective_start_of_period.strftime('%Y-%m-%d')}). No data to check.")
+    if end_of_period < effective_start:
         return 0, []
 
-    query = f"""
-        SELECT DISTINCT CAST(release_timestamp AS DATE) as video_date
+    query = """
+        SELECT DISTINCT strftime('%Y-%m-%d', release_timestamp) as video_date
         FROM video_metadata
-        WHERE release_timestamp >= '{effective_start_of_period}' AND release_timestamp < '{today_date}';
+        WHERE release_timestamp >= ? AND release_timestamp < ?
     """
-
-    try:
-        df = pd.read_sql_query(query, conn_str)
-    except Exception as e:
-        print(f"Error querying database: {e}")
-        return -1, []  # Indicate an error
-
-    # Generate all dates in the defined period for comparison
-    all_period_dates = set(
-        pd.date_range(effective_start_of_period, end_of_period, freq="D").date
+    db_dates = set(
+        r["video_date"]
+        for r in sqlite_query(
+            db_path, query,
+            (effective_start.isoformat(), today.isoformat()),
+        )
     )
 
-    if df.empty:
-        # If no videos found in the defined period, all days are considered missing
-        return len(all_period_dates), sorted(list(all_period_dates))
-
-    # Convert database dates to a set for efficient lookup
-    db_dates = set(pd.to_datetime(df["video_date"]).dt.date)
-
-    missing_dates = sorted(list(all_period_dates - db_dates))
+    all_dates = [effective_start + timedelta(days=i) for i in range((end_of_period - effective_start).days + 1)]
+    missing_dates = sorted([d for d in all_dates if d.isoformat() not in db_dates])
     return len(missing_dates), missing_dates
 
 
-def get_video_offsets(db_config):
-    """
-    Builds a dictionary of video_id to offsets based on the minimum timestamp difference
-    between live chat messages and video release timestamps.
-
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-
-    Returns:
-        dict: A dictionary where keys are video_id and values are offsets in seconds.
-    """
-    # Create a connection string for pandas
-    conn_str = f"postgresql://{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}"
-
-    # Query to calculate offsets
-    query = """
-        SELECT
-            vm.video_id,
-            EXTRACT(EPOCH FROM MIN(lc.timestamp) - vm.release_timestamp) AS offset_seconds
+def get_video_offsets(db_path: str) -> dict:
+    """Build video_id -> offset_seconds mapping from minimum timestamp diff."""
+    rows = sqlite_query(
+        db_path,
+        """
+        SELECT vm.video_id,
+               CAST(ROUND((julianday(lc.timestamp) - julianday(vm.release_timestamp)) * 86400) AS INTEGER) AS offset_seconds
         FROM live_chat lc
         JOIN video_metadata vm ON lc.video_id = vm.video_id
         WHERE lc.timestamp >= vm.release_timestamp
-        GROUP BY vm.video_id;
-    """
-
-    # Use pandas to execute the query and build the dictionary
-    df = pd.read_sql_query(query, conn_str)
-    return dict(zip(df["video_id"], df["offset_seconds"].astype(int)))
+        GROUP BY vm.video_id
+        """,
+    )
+    return {r["video_id"]: int(r["offset_seconds"]) for r in rows}
 
 
 def print_search_results_as_markdown(
-    db_config,
-    regex_patterns,
-    window_size=60,
-    min_matches=5,
-    timestamp_offset=-10,
-    output_file=None,
-    debug=False,
-):
-    """
-    Searches the database and prints results as a markdown table with columns:
-    - Video Date (YYYY-mm-dd)
-    - Video Title (as a YouTube link)
-    - Timestamp Link (HH:MM:SS)
-    Optionally includes Author and Message columns if debug is enabled.
+    db_path: str,
+    regex_patterns: list[str],
+    window_size: int = 60,
+    min_matches: int = 5,
+    timestamp_offset: int = -10,
+    output_file: str | None = None,
+    debug: bool = False,
+) -> None:
+    """Search and print results as a markdown table."""
+    results, latest_str, total_lines = search_messages(
+        db_path, regex_patterns, window_size, min_matches
+    )
 
-    Parameters:
-        db_config (dict): Database configuration for PostgreSQL connection.
-        regex_patterns (list): List of regex patterns to search for in messages.
-        window_size (int): Time window size in seconds for grouping messages.
-        min_matches (int): Minimum number of matches required within a time window.
-        timestamp_offset (int): Number of seconds to subtract from the timestamp for context.
-        output_file (str): Path to the file to write results to.
-        debug (bool): Whether to include Author and Message columns in the output.
-    """
-    results, latest_live_chat_timestamp, total_lines_searched = search_messages(db_config, regex_patterns, window_size, min_matches)
-    # offsets = get_video_offsets(db_config)
-
-    # Define headers as a list based on debug mode
     headers = ["Date", "Title", "Timestamp"]
     if debug:
         headers.extend(["Author", "Message"])
 
-    # Generate markdown header and spacer line dynamically
     header_line = f"| {' | '.join(headers)} |"
     spacer_line = f"|{'------|' * len(headers)}"
-
     output_lines = [header_line, spacer_line]
 
-    for result in results:
-        video_link = f"https://www.youtube.com/watch?v={result['video_id']}"
+    # Group hits by video_id, preserving first-occurrence order
+    groups: list[tuple[str, list[dict]]] = []
+    seen: set[str] = set()
+    for r in results:
+        if r["video_id"] not in seen:
+            seen.add(r["video_id"])
+            groups.append((r["video_id"], [r]))
+        else:
+            groups[-1][1].append(r)
 
-        # Use msec if available, otherwise use the computed offset from the database
-        msec = result.get("video_offset_time_msec", 0)
-        if msec > 0:
-            result["video_offset_time_seconds"] = msec / 1000
+    for video_id, rows in groups:
+        first = rows[0]
+        video_link = f"https://www.youtube.com/watch?v={video_id}"
 
-        timestamp_adjusted_seconds = int(
-            ceil(result["video_offset_time_seconds"] + timestamp_offset)
-        )
-        timestamp_link = f"{video_link}&t={timestamp_adjusted_seconds}s"
-        timestamp_hms = pd.to_datetime(timestamp_adjusted_seconds, unit="s").strftime(
-            "%H:%M:%S"
-        )
+        # Format timestamp links for all matches in this group
+        timestamp_links: list[str] = []
+        for r in rows:
+            msec = r.get("video_offset_time_msec", 0)
+            if msec and msec > 0:
+                offset_secs = msec / 1000
+            else:
+                offset_secs = r.get("video_offset_time_seconds", 0) or 0
+
+            adjusted = int(ceil(offset_secs + timestamp_offset))
+            adjusted = max(0, adjusted)
+            h, remainder = divmod(adjusted, 3600)
+            m, s = divmod(remainder, 60)
+            timestamp_links.append(
+                f"[{h:02d}:{m:02d}:{s:02d}]({video_link}&t={adjusted}s)"
+            )
 
         row = [
-            f"{result['timestamp'].date()}",
-            f"[{result['title']}]({video_link})",
-            f"[{timestamp_hms}]({timestamp_link})",
+            first["timestamp"][:10],  # "YYYY-MM-DD" from stored format
+            f"[{first['title']}]({video_link})",
+            ", ".join(timestamp_links),
         ]
 
         if debug:
-            row.extend(
-                [
-                    result.get("author", ""),
-                    result.get("message", ""),
-                ]
-            )
+            row.extend([first.get("author", ""), first.get("message", "")])
 
         output_lines.append(f"| {' | '.join(row)} |")
 
-    # Escape characters in the regex patterns that might interfere with markdown display
-    escaped_regex_patterns = [
-        re.sub(r"([*_~|`])", r"\\\\\1", pattern) for pattern in regex_patterns
-    ]
-
-    # Add a summary table with search parameters
-    output_lines.append("\n")
+    # Summary table
+    output_lines.append("")
     output_lines.append("| Parameter       | Value |")
     output_lines.append("|-----------------|-------|")
-    output_lines.append(f"| Search Patterns | `{', '.join(escaped_regex_patterns)}` |")
+
+    escaped_patterns = [
+        re.sub(r"([*_~|`])", r"\\\\\1", p) for p in regex_patterns
+    ]
+    output_lines.append(
+        f"| Search Patterns | `{', '.join(escaped_patterns)}` |"
+    )
     output_lines.append(f"| Window Size     | {window_size} seconds |")
     output_lines.append(f"| Minimum Matches | {min_matches} |")
     output_lines.append(f"| Results Found   | {len(results)} |")
-    output_lines.append(f"| Lines Searched  | {total_lines_searched} |")
+    output_lines.append(f"| Lines Searched  | {total_lines} |")
     output_lines.append(
-        f"| Generated At    | {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} |"
+        f"| Generated At    | {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')} |"
     )
 
-    # Add Latest Live Chat (from the database, as UTC)
-    if latest_live_chat_timestamp is not None:
-        latest_chat_utc = pd.Timestamp(latest_live_chat_timestamp).tz_localize(None).tz_localize('UTC') if pd.Timestamp(latest_live_chat_timestamp).tzinfo is None else pd.Timestamp(latest_live_chat_timestamp).tz_convert('UTC')
-        latest_chat_str = latest_chat_utc.strftime('%Y-%m-%d %H:%M:%S %Z')
-        output_lines.append(f"| Latest Live Chat | {latest_chat_str} |")
+    if latest_str:
+        dt = datetime.fromisoformat(latest_str)
+        output_lines.append(
+            f"| Latest Live Chat | {dt.strftime('%Y-%m-%d %H:%M:%S UTC')} |"
+        )
 
-    # Escape markdown output using rich's escape function
-    escaped_output_lines = [escape(line) for line in output_lines]
-    markdown_output = "\n".join(escaped_output_lines)
-    print(Markdown(markdown_output))
+    escaped_output = "\n".join(escape(line) for line in output_lines)
+    print(Markdown(escaped_output))
 
     if output_file:
         with open(output_file, "w") as f:
-            f.write(markdown_output)
+            f.write(escaped_output)
+
+
+def dbcheck(db_path: str) -> None:
+    """Test database connection and show basic stats."""
+    print(f"Opening SQLite database at {db_path}...")
+    conn = sqlite3.connect(db_path)
+
+    version = conn.execute("SELECT sqlite_version()").fetchone()[0]
+    print(f"OK — SQLite {version}")
+
+    for table in ["live_chat", "video_metadata"]:
+        try:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"  {table}: {count} rows")
+        except Exception as e:
+            print(f"  {table}: error — {e}")
+
+    conn.close()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Process YouTube data. Allows parsing JSON files or searching messages."
+        description="Process YouTube live chat data. Parse JSON files or search messages."
     )
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
         title="actions",
         description="Choose an action to perform:",
-        help="Run '<command> --help' for more information on a specific command.",
+        help="Run '<command> --help' for more info on a command.",
     )
 
     # Search sub-command
@@ -364,41 +302,36 @@ def main():
         help="List of regex patterns to search for in messages.",
     )
     search_parser.add_argument(
-        "-o",
-        "--output-file",
-        metavar="OUTPUT_FILE",
-        type=str,
+        "-o", "--output-file", metavar="OUTPUT_FILE", type=str,
         help="File to write search results to.",
     )
     search_parser.add_argument(
-        "--debug",
-        action="store_true",
+        "--debug", action="store_true",
         help="Include Author and Message columns in the output.",
     )
 
     # Parse sub-command
     parse_parser = subparsers.add_parser(
-        "parse", help="Parse JSON files and load into PostgreSQL."
+        "parse", help="Parse JSON files and load into SQLite."
     )
     parse_parser.add_argument(
         "data_dir",
         metavar="DATA_DIR",
         type=str,
-        help="Directory path containing both info and live chat JSON files to parse.",
+        help="Directory containing .info.json and .live_chat.json files.",
     )
+
+    # DB check sub-command
+    subparsers.add_parser("dbcheck", help="Test database connection and show stats.")
 
     args = parser.parse_args()
 
-    db_config = {
-        "dbname": "ytlc",
-        "user": "ytlc",
-        "host": "localhost",
-        "port": 5432,
-    }
+    # Match Rust behavior: read from YTLC_DB env var, default to ytlc.db
+    db_path = os.environ.get("YTLC_DB", "ytlc.db")
 
     if args.command == "search":
         print_search_results_as_markdown(
-            db_config,
+            db_path,
             args.regex_patterns,
             window_size=60,
             min_matches=5,
@@ -409,17 +342,14 @@ def main():
 
     elif args.command == "parse":
         if not os.path.isdir(args.data_dir):
-            parse_parser.error(
-                f"Directory not found at {args.data_dir}"
-            )
+            parse_parser.error(f"Directory not found at {args.data_dir}")
 
         print(f"Parsing JSON files from: {args.data_dir}")
-        parse_jsons_to_postgres(
-            args.data_dir, db_config, json_type="info"
-        )
-        parse_jsons_to_postgres(
-            args.data_dir, db_config, json_type="live_chat"
-        )
+        parse_jsons_to_sqlite(args.data_dir, db_path, "info")
+        parse_jsons_to_sqlite(args.data_dir, db_path, "live_chat")
+
+    elif args.command == "dbcheck":
+        dbcheck(db_path)
 
 
 if __name__ == "__main__":

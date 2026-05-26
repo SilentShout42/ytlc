@@ -1,14 +1,10 @@
 [project]
 name = "ytlc"
 version = "0.1.0"
-description = "Add your description here"
+description = "Process YouTube live chat data"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "asyncio>=3.4.3",
     "orjson>=3.10.18",
-    "pandas>=2.2.3",
-    "psycopg2>=2.9.10",
     "rich>=14.0.0",
-    "sqlalchemy>=2.0.41",
 ]

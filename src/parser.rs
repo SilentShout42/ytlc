@@ -1,26 +1,47 @@
 use crate::DbConfig;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use postgres::{Client, NoTls};
 use rayon::prelude::*;
 use regex::Regex;
-use serde_json::Value;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-fn parse_message_runs(runs: &[Value]) -> String {
+/// Schema for yt-dlp info.json files (flat metadata structure)
+#[derive(Debug, Clone, Deserialize)]
+struct VideoInfo {
+    #[serde(rename = "id")]
+    video_id: String,
+    title: String,
+    #[serde(rename = "channel_id")]
+    channel_id: String,
+    channel: String,
+    #[serde(default, alias = "release_timestamp")]
+    release_timestamp: Option<i64>,
+    #[serde(default)]
+    timestamp: Option<i64>,
+    #[serde(default)]
+    duration: Option<i64>,
+    #[serde(default)]
+    duration_string: Option<String>,
+    #[serde(default)]
+    was_live: Option<bool>,
+}
+
+fn parse_message_runs(runs: &[MessageRun]) -> String {
     runs.iter()
         .map(|run| {
-            if let Some(text) = run.get("text").and_then(|t| t.as_str()) {
-                text.to_string()
+            if let Some(ref text) = run.text {
+                text.clone()
+            } else if let Some(ref emoji) = run.emoji {
+                emoji
+                    .shortcuts
+                    .as_ref()
+                    .and_then(|s| s.first())
+                    .cloned()
+                    .unwrap_or_default()
             } else {
-                run.get("emoji")
-                    .and_then(|e| e.get("shortcuts"))
-                    .and_then(|s| s.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string()
+                String::new()
             }
         })
         .collect()
@@ -44,19 +65,120 @@ fn parse_duration(s: &str) -> Option<i64> {
     }
 }
 
-#[derive(Debug)]
-struct ChatMessage {
-    message_id: String,
-    timestamp: DateTime<Utc>,
-    video_id: String,
-    author: String,
-    author_channel_id: String,
-    message: String,
-    is_moderator: bool,
-    is_channel_owner: bool,
-    video_offset_time_msec: Option<i64>,
-    video_offset_time_text: String,
-    filename: String,
+/// Top-level live_chat JSON (single line-delimited object)
+#[derive(Debug, Clone, Deserialize)]
+struct ReplayChatItem {
+    #[serde(rename = "replayChatItemAction")]
+    replay_chat_item_action: Option<ReplayChatAction>,
+}
+
+/// replayChatItemAction container
+#[derive(Debug, Clone, Deserialize)]
+struct ReplayChatAction {
+    #[serde(rename = "actions")]
+    actions: Vec<ChatAction>,
+    #[serde(rename = "videoOffsetTimeMsec")]
+    video_offset_time_msec: Option<String>,
+}
+
+/// Single chat action in actions array
+#[derive(Debug, Clone, Deserialize)]
+struct ChatAction {
+    #[serde(rename = "addChatItemAction")]
+    add_chat_item_action: Option<AddChatItemAction>,
+}
+
+/// addChatItemAction container
+#[derive(Debug, Clone, Deserialize)]
+struct AddChatItemAction {
+    #[serde(rename = "item")]
+    item: Option<ChatItem>,
+}
+
+/// item container
+#[derive(Debug, Clone, Deserialize)]
+struct ChatItem {
+    #[serde(rename = "liveChatTextMessageRenderer")]
+    live_chat_text_message_renderer: Option<LiveChatTextMessageRenderer>,
+}
+
+/// liveChatTextMessageRenderer - the actual message renderer
+#[derive(Debug, Clone, Deserialize)]
+struct LiveChatTextMessageRenderer {
+    id: String,
+    #[serde(rename = "timestampUsec")]
+    timestamp_usec: serde_json::Value,
+    #[serde(rename = "authorName")]
+    author_name: Option<MessageAuthor>,
+    #[serde(rename = "authorExternalChannelId")]
+    author_external_channel_id: Option<String>,
+    message: Option<MessageContent>,
+    #[serde(rename = "authorBadges")]
+    author_badges: Option<Vec<AuthorBadge>>,
+    #[serde(rename = "timestampText")]
+    timestamp_text: Option<TimestampText>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MessageAuthor {
+    #[serde(rename = "simpleText")]
+    simple_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MessageContent {
+    runs: Option<Vec<MessageRun>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MessageRun {
+    text: Option<String>,
+    emoji: Option<MessageEmoji>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MessageEmoji {
+    shortcuts: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AuthorBadge {
+    #[serde(rename = "liveChatAuthorBadgeRenderer")]
+    live_chat_author_badge_renderer: Option<BadgeRenderer>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BadgeRenderer {
+    icon: Option<BadgeIcon>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BadgeIcon {
+    #[serde(rename = "iconType")]
+    icon_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TimestampText {
+    #[serde(rename = "simpleText")]
+    simple_text: Option<String>,
+}
+
+/// ChatMessage is the final parsed representation (NOT directly from JSON)
+/// Fields are extracted from the deeply nested JSON schema above
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub message_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub video_id: String,
+    pub author: String,
+    pub author_channel_id: String,
+    pub message: String,
+    pub is_moderator: bool,
+    pub is_channel_owner: bool,
+    pub video_offset_time_msec: Option<i64>,
+    pub video_offset_time_text: String,
+    pub filename: String,
 }
 
 fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
@@ -72,7 +194,9 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
         if line.is_empty() {
             continue;
         }
-        let obj: Value = match serde_json::from_str(line) {
+
+        // Deserialize using serde schema - fails fast on malformed data
+        let chat_item: ReplayChatItem = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("Parse error in {}: {}", filename, e);
@@ -80,93 +204,91 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
             }
         };
 
-        let replay = match obj.get("replayChatItemAction") {
+        let replay = match chat_item.replay_chat_item_action {
             Some(r) => r,
             None => continue,
         };
 
-        let actions = match replay.get("actions").and_then(|a| a.as_array()) {
-            Some(a) => a,
-            None => continue,
-        };
+        let actions = replay.actions;
+        if actions.is_empty() {
+            continue;
+        }
 
         for action in actions {
-            let renderer = action
-                .get("addChatItemAction")
-                .and_then(|a| a.get("item"))
-                .and_then(|i| i.get("liveChatTextMessageRenderer"));
-            let renderer = match renderer {
+            let item = match action.add_chat_item_action.and_then(|a| a.item) {
+                Some(i) => i,
+                None => continue,
+            };
+
+            let renderer = match item.live_chat_text_message_renderer {
                 Some(r) => r,
                 None => continue,
             };
 
-            let runs = renderer
-                .get("message")
-                .and_then(|m| m.get("runs"))
-                .and_then(|r| r.as_array())
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+            // Extract video_offset_time_msec from top-level replay
+            let video_offset_time_msec = replay
+                .video_offset_time_msec
+                .as_ref()
+                .and_then(|v| v.parse::<i64>().ok());
 
+            // Extract timestamp from microseconds (string or int)
             let timestamp_usec = renderer
-                .get("timestampUsec")
-                .and_then(|t| t.as_str().and_then(|s| s.parse::<i64>().ok()).or_else(|| t.as_i64()))
+                .timestamp_usec
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+                .or(renderer
+                    .timestamp_usec
+                    .as_i64())
                 .unwrap_or(0);
             let timestamp = DateTime::from_timestamp_micros(timestamp_usec)
                 .unwrap_or_default();
 
-            let is_badge = |badge_type: &str| {
-                renderer
-                    .get("authorBadges")
-                    .and_then(|b| b.as_array())
-                    .map(|badges| {
-                        badges.iter().any(|b| {
-                            b.get("liveChatAuthorBadgeRenderer")
-                                .and_then(|r| r.get("icon"))
-                                .and_then(|i| i.get("iconType"))
-                                .and_then(|t| t.as_str())
-                                == Some(badge_type)
-                        })
-                    })
-                    .unwrap_or(false)
-            };
+            // Extract message runs
+            let runs = renderer
+                .message
+                .map(|m| m.runs)
+                .flatten()
+                .unwrap_or_default();
 
-            let video_offset_time_msec = obj
-                .get("videoOffsetTimeMsec")
-                .or_else(|| replay.get("videoOffsetTimeMsec"))
-                .and_then(|v| {
-                    v.as_i64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                });
+            // Extract badge types
+            let badge_types = renderer
+                .author_badges
+                .map(|badges| {
+                    badges
+                        .iter()
+                        .filter_map(|b| {
+                            b.live_chat_author_badge_renderer
+                                .as_ref()
+                                .and_then(|r| r.icon.as_ref())
+                                .and_then(|i| i.icon_type.as_ref())
+                                .map(|s| s.clone())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            let is_moderator = badge_types.iter().any(|t| t == "MODERATOR");
+            let is_channel_owner = badge_types.iter().any(|t| t == "OWNER");
 
             messages.push(ChatMessage {
-                message_id: renderer
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                message_id: renderer.id,
                 timestamp,
                 video_id: video_id.clone(),
                 author: renderer
-                    .get("authorName")
-                    .and_then(|a| a.get("simpleText"))
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .author_name
+                    .and_then(|a| a.simple_text)
+                    .unwrap_or_default(),
                 author_channel_id: renderer
-                    .get("authorExternalChannelId")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                message: parse_message_runs(runs),
-                is_moderator: is_badge("MODERATOR"),
-                is_channel_owner: is_badge("OWNER"),
+                    .author_external_channel_id
+                    .unwrap_or_default(),
+                message: parse_message_runs(&runs),
+                is_moderator,
+                is_channel_owner,
                 video_offset_time_msec,
                 video_offset_time_text: renderer
-                    .get("timestampText")
-                    .and_then(|t| t.get("simpleText"))
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .timestamp_text
+                    .and_then(|t| t.simple_text)
+                    .unwrap_or_default(),
                 filename: filename.clone(),
             });
         }
@@ -175,8 +297,70 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
     Ok(messages)
 }
 
-fn insert_messages(client: &mut Client, messages: &[ChatMessage]) -> Result<()> {
-    client.execute("SET TIME ZONE 'UTC'", &[])?;
+/// Create the required SQLite tables and enable WAL for concurrent write safety
+fn create_tables(conn_path: &std::path::Path) -> Result<()> {
+    use rusqlite::Connection;
+    let conn = Connection::open(conn_path)?;
+
+    // Enable WAL mode for safe concurrent writes from rayon threads
+    conn.execute_batch(r#"
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 5000;
+    "#)?;
+
+    // Create video_metadata table
+    conn.execute_batch(r#"
+        CREATE TABLE IF NOT EXISTS video_metadata (
+            video_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_name TEXT NOT NULL,
+            release_timestamp DATETIME,
+            timestamp DATETIME,
+            duration INTEGER,
+            was_live BOOLEAN,
+            filename TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_video_metadata_release
+            ON video_metadata(release_timestamp);
+
+        CREATE INDEX IF NOT EXISTS idx_video_metadata_channel
+            ON video_metadata(channel_id);
+    "#)?;
+
+    // Create live_chat table
+    conn.execute_batch(r#"
+        CREATE TABLE IF NOT EXISTS live_chat (
+            message_id TEXT PRIMARY KEY,
+            timestamp DATETIME NOT NULL,
+            video_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            author_channel_id TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_moderator BOOLEAN NOT NULL DEFAULT 0,
+            is_channel_owner BOOLEAN NOT NULL DEFAULT 0,
+            video_offset_time_msec INTEGER,
+            video_offset_time_text TEXT,
+            filename TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_live_chat_video
+            ON live_chat(video_id);
+
+        CREATE INDEX IF NOT EXISTS idx_live_chat_video_ts
+            ON live_chat(video_id, timestamp);
+
+        CREATE INDEX IF NOT EXISTS idx_live_chat_msg
+            ON live_chat(message);
+    "#)?;
+
+    Ok(())
+}
+
+fn insert_messages(conn_path: &std::path::Path, messages: &[ChatMessage]) -> Result<()> {
+    use rusqlite::Connection;
 
     // Deduplicate by message_id
     let mut unique: std::collections::HashMap<&str, &ChatMessage> = std::collections::HashMap::new();
@@ -191,53 +375,46 @@ fn insert_messages(client: &mut Client, messages: &[ChatMessage]) -> Result<()> 
         );
     }
 
-    // Collect typed columns for UNNEST batch insert
-    let ids: Vec<&str> = deduped.iter().map(|m| m.message_id.as_str()).collect();
-    let timestamps: Vec<DateTime<Utc>> = deduped.iter().map(|m| m.timestamp).collect();
-    let video_ids: Vec<&str> = deduped.iter().map(|m| m.video_id.as_str()).collect();
-    let authors: Vec<&str> = deduped.iter().map(|m| m.author.as_str()).collect();
-    let channel_ids: Vec<&str> = deduped.iter().map(|m| m.author_channel_id.as_str()).collect();
-    let msgs: Vec<&str> = deduped.iter().map(|m| m.message.as_str()).collect();
-    let is_mods: Vec<bool> = deduped.iter().map(|m| m.is_moderator).collect();
-    let is_owners: Vec<bool> = deduped.iter().map(|m| m.is_channel_owner).collect();
-    let offsets_msec: Vec<Option<i64>> = deduped.iter().map(|m| m.video_offset_time_msec).collect();
-    let offset_texts: Vec<&str> = deduped.iter().map(|m| m.video_offset_time_text.as_str()).collect();
-    let filenames: Vec<&str> = deduped.iter().map(|m| m.filename.as_str()).collect();
+    let conn = Connection::open(conn_path)?;
+    // Long timeout for high-contention scenarios (874 files with 17+ parallel threads)
+    conn.busy_timeout(std::time::Duration::from_secs(60))?;
 
-    client.execute(
-        r#"
-        INSERT INTO live_chat (
+    // Begin transaction to batch inserts and reduce write contention
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+
+    // Prepare statement once, reuse for all inserts
+    let mut stmt = conn.prepare(r#"
+        INSERT OR REPLACE INTO live_chat (
             message_id, timestamp, video_id, author, author_channel_id, message,
             is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text, filename
-        )
-        SELECT * FROM UNNEST(
-            $1::text[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[],
-            $7::bool[], $8::bool[], $9::bigint[], $10::text[], $11::text[]
-        )
-        ON CONFLICT (message_id) DO UPDATE SET
-            timestamp = COALESCE(EXCLUDED.timestamp, live_chat.timestamp),
-            video_id = COALESCE(NULLIF(EXCLUDED.video_id, ''), live_chat.video_id),
-            author = COALESCE(NULLIF(EXCLUDED.author, ''), live_chat.author),
-            author_channel_id = COALESCE(NULLIF(EXCLUDED.author_channel_id, ''), live_chat.author_channel_id),
-            message = COALESCE(NULLIF(EXCLUDED.message, ''), live_chat.message),
-            is_moderator = COALESCE(EXCLUDED.is_moderator, live_chat.is_moderator),
-            is_channel_owner = COALESCE(EXCLUDED.is_channel_owner, live_chat.is_channel_owner),
-            video_offset_time_msec = COALESCE(EXCLUDED.video_offset_time_msec, live_chat.video_offset_time_msec),
-            video_offset_time_text = COALESCE(NULLIF(EXCLUDED.video_offset_time_text, ''), live_chat.video_offset_time_text),
-            filename = COALESCE(NULLIF(EXCLUDED.filename, ''), live_chat.filename)
-        "#,
-        &[
-            &ids, &timestamps, &video_ids, &authors, &channel_ids, &msgs,
-            &is_mods, &is_owners, &offsets_msec, &offset_texts, &filenames,
-        ],
-    )?;
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    "#)?;
+
+    for m in deduped {
+        stmt.execute(rusqlite::params![
+            &m.message_id,
+            &m.timestamp,
+            &m.video_id,
+            &m.author,
+            &m.author_channel_id,
+            &m.message,
+            &m.is_moderator,
+            &m.is_channel_owner,
+            m.video_offset_time_msec.map(|v| v as i64),
+            &m.video_offset_time_text,
+            &m.filename,
+        ])?;
+    }
+
+    // Commit the transaction
+    conn.execute_batch("COMMIT;")?;
 
     Ok(())
 }
 
 fn process_live_chat_file(
     path: &Path,
-    db_config: &DbConfig,
+    conn_path: &std::path::Path,
     file_num: usize,
     total: usize,
 ) -> Result<usize> {
@@ -252,8 +429,7 @@ fn process_live_chat_file(
         return Ok(0);
     }
 
-    let mut client = Client::connect(&db_config.conn_string(), NoTls)?;
-    insert_messages(&mut client, &messages)?;
+    insert_messages(conn_path, &messages)?;
 
     println!(
         "[{}/{}] Inserted {} messages from {}",
@@ -265,72 +441,64 @@ fn process_live_chat_file(
     Ok(messages.len())
 }
 
-fn parse_info_json(path: &Path, db_config: &DbConfig) -> Result<()> {
+fn parse_info_json(path: &Path, conn_path: &std::path::Path) -> Result<()> {
     let canonical = path.canonicalize()?;
     let content = std::fs::read_to_string(&canonical)?;
-    let data: Value = serde_json::from_str(&content)?;
 
-    let video_id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    let channel_id = data.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
-    let channel_name = data.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+    // Deserialize using serde schema - fails fast on missing/invalid fields
+    let info: VideoInfo = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to deserialize video info from {:?}", canonical))?;
 
-    let release_ts: Option<DateTime<Utc>> = data
-        .get("release_timestamp")
-        .and_then(|v| v.as_i64())
+    // Enforce required fields
+    if info.video_id.is_empty() {
+        anyhow::bail!("video_id is required but empty in {:?}", canonical);
+    }
+    if info.title.is_empty() {
+        anyhow::bail!("title is required but empty in {:?}", canonical);
+    }
+
+    // Choose release_timestamp over timestamp (preferred field)
+    let release_ts = info
+        .release_timestamp
+        .or(info.timestamp)
         .and_then(DateTime::<Utc>::from_timestamp_secs);
 
-    let timestamp: Option<DateTime<Utc>> = data
-        .get("timestamp")
-        .and_then(|v| v.as_i64())
-        .and_then(DateTime::<Utc>::from_timestamp_secs);
+    let duration_secs: Option<i64> = info
+        .duration
+        .or_else(|| info.duration_string.as_ref().and_then(|s| parse_duration(s.as_str())));
 
-    let duration_secs: Option<i64> = data
-        .get("duration")
-        .and_then(|v| v.as_i64())
-        .or_else(|| {
-            data.get("duration_string")
-                .and_then(|v| v.as_str())
-                .and_then(parse_duration)
-        });
-
-    let was_live: Option<bool> = data.get("was_live").and_then(|v| v.as_bool());
+    let was_live: Option<bool> = info.was_live;
     let filename = canonical.to_string_lossy().to_string();
 
-    let mut client = Client::connect(&db_config.conn_string(), NoTls)?;
-    client.execute("SET TIME ZONE 'UTC'", &[])?;
+    use rusqlite::Connection;
+    let conn = Connection::open(conn_path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(60))?;
 
-    client.execute(
-        r#"
-        INSERT INTO video_metadata (
+    // Begin transaction for consistency with live_chat parsing
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+
+    // Prepare statement once, insert the single row
+    let mut stmt = conn.prepare(r#"
+        INSERT OR REPLACE INTO video_metadata (
             video_id, title, channel_id, channel_name,
             release_timestamp, timestamp, duration, was_live, filename
-        )
-        VALUES ($1, $2, $3, $4, $5, $6,
-            $7::bigint * interval '1 second',
-            $8, $9)
-        ON CONFLICT (video_id) DO UPDATE SET
-            title = COALESCE(NULLIF(EXCLUDED.title, ''), video_metadata.title),
-            channel_id = COALESCE(NULLIF(EXCLUDED.channel_id, ''), video_metadata.channel_id),
-            channel_name = COALESCE(NULLIF(EXCLUDED.channel_name, ''), video_metadata.channel_name),
-            release_timestamp = COALESCE(EXCLUDED.release_timestamp, video_metadata.release_timestamp),
-            timestamp = COALESCE(EXCLUDED.timestamp, video_metadata.timestamp),
-            duration = COALESCE(EXCLUDED.duration, video_metadata.duration),
-            was_live = COALESCE(EXCLUDED.was_live, video_metadata.was_live),
-            filename = COALESCE(NULLIF(EXCLUDED.filename, ''), video_metadata.filename)
-        "#,
-        &[
-            &video_id,
-            &title,
-            &channel_id,
-            &channel_name,
-            &release_ts,
-            &timestamp,
-            &duration_secs,
-            &was_live,
-            &filename,
-        ],
-    )?;
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    "#)?;
+
+    stmt.execute(rusqlite::params![
+        &info.video_id,
+        &info.title,
+        &info.channel_id,
+        &info.channel,
+        release_ts,
+        release_ts,
+        duration_secs,
+        was_live,
+        &filename,
+    ])?;
+
+    // Commit the transaction
+    conn.execute_batch("COMMIT;")?;
 
     Ok(())
 }
@@ -352,7 +520,7 @@ fn find_files(directory: &str, suffix: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn parse_jsons_to_postgres(
+pub fn parse_jsons(
     directory: &str,
     db_config: &DbConfig,
     json_type: &str,
@@ -371,6 +539,11 @@ pub fn parse_jsons_to_postgres(
 
     println!("Found {} {} files to process", files.len(), label);
 
+    let conn_path = db_config.connect_path()?;
+
+    // Create tables if they don't exist (only once, before first parse)
+    create_tables(&conn_path)?;
+
     match json_type {
         "live_chat" => {
             let n_threads = std::thread::available_parallelism()
@@ -383,7 +556,7 @@ pub fn parse_jsons_to_postgres(
                 .par_iter()
                 .enumerate()
                 .map(|(i, path)| {
-                    match process_live_chat_file(path, db_config, i + 1, total) {
+                    match process_live_chat_file(path, &conn_path, i + 1, total) {
                         Ok(count) => (true, count),
                         Err(e) => {
                             eprintln!("ERROR processing {:?}: {}", path, e);
@@ -405,7 +578,7 @@ pub fn parse_jsons_to_postgres(
             for (i, path) in files.iter().enumerate() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 println!("[{}/{}] Processing: {}", i + 1, total, name);
-                if let Err(e) = parse_info_json(path, db_config) {
+                if let Err(e) = parse_info_json(path, &conn_path) {
                     eprintln!("Error processing {:?}: {}", path, e);
                 }
             }

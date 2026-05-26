@@ -26,4 +26,5 @@ samples
 !saved_queries/**/*.sql
 !misc/**/*.sql
 
+# Rust build artifacts
 target/

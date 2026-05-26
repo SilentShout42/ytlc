@@ -2,35 +2,24 @@ mod parser;
 mod search;
 
 use clap::{Parser, Subcommand};
-
 #[derive(Debug, Clone)]
 pub struct DbConfig {
-    pub dbname: String,
-    pub user: String,
-    pub host: String,
-    pub port: u16,
-    pub password: Option<String>,
+    pub db_path: String,
 }
 
 impl DbConfig {
-    pub fn conn_string(&self) -> String {
-        // Explicit password field takes precedence, then libpq env vars
-        let pw = self
-            .password
-            .clone()
-            .or_else(|| std::env::var("PGPASSWORD").ok())
-            .or_else(|| std::env::var("POSTGRES_PASSWORD").ok());
+    pub fn new(db_path: String) -> Self {
+        Self { db_path }
+    }
 
-        match pw {
-            Some(p) => format!(
-                "host={} user={} dbname={} port={} password={}",
-                self.host, self.user, self.dbname, self.port, p
-            ),
-            None => format!(
-                "host={} user={} dbname={} port={}",
-                self.host, self.user, self.dbname, self.port
-            ),
+    pub fn connect_path(&self) -> anyhow::Result<std::path::PathBuf> {
+        let path = std::path::PathBuf::from(&self.db_path);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
+        Ok(path.canonicalize().unwrap_or(path))
     }
 }
 
@@ -55,7 +44,7 @@ enum Commands {
         debug: bool,
     },
 
-    #[command(about = "Parse JSON files and load into PostgreSQL.")]
+    #[command(about = "Parse JSON files and load into SQLite.")]
     Parse {
         #[arg(help = "Directory containing .info.json and .live_chat.json files.")]
         data_dir: String,
@@ -66,15 +55,11 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let db_path = std::env::var("YTLC_DB").unwrap_or_else(|_| "ytlc.db".to_string());
 
-    let db_config = DbConfig {
-        dbname: "ytlc".to_string(),
-        user: "ytlc".to_string(),
-        host: "localhost".to_string(),
-        port: 5432,
-        password: None, // resolved from PGPASSWORD / POSTGRES_PASSWORD at connection time
-    };
+    let db_config = DbConfig::new(db_path);
+
+    let cli = Cli::parse();
 
     match cli.command {
         Commands::Search {
@@ -98,8 +83,8 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
             println!("Parsing JSON files from: {}", data_dir);
-            parser::parse_jsons_to_postgres(&data_dir, &db_config, "info")?;
-            parser::parse_jsons_to_postgres(&data_dir, &db_config, "live_chat")?;
+            parser::parse_jsons(&data_dir, &db_config, "info")?;
+            parser::parse_jsons(&data_dir, &db_config, "live_chat")?;
         }
         Commands::Dbcheck => {
             search::db_check(&db_config)?;
