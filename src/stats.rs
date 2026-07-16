@@ -2,6 +2,7 @@ use crate::DbConfig;
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 
 /// Parse a human-readable duration string like "2m", "1h", "30s" into seconds.
 pub fn parse_duration(s: &str) -> Result<i64> {
@@ -413,12 +414,13 @@ fn pick_message_rate_top(chunks: &[ChunkStats], n: usize) -> Vec<TopMoment> {
     moments.into_iter().take(n).collect()
 }
 
-/// Print the top moments table to stdout.
-fn print_moments_table(video_id: &str, moments: &[TopMoment], strategy: &RankStrategy, max_total_secs: i64) {
+/// Build the moments table as markdown lines.
+fn build_moments_table(video_id: &str, moments: &[TopMoment], strategy: &RankStrategy, max_total_secs: i64) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
     match strategy {
         RankStrategy::RollingPeak => {
-            println!("| Rank | Time | Duration | Unique Authors | Messages | Peak At | Peak Uniques | Lookback |");
-            println!("|------|------|----------|----------------|----------|---------|--------------|----------|");
+            lines.push("| Rank | Time | Duration | Unique Authors | Messages | Peak At | Peak Uniques | Lookback |".to_string());
+            lines.push("|------|------|----------|----------------|----------|---------|--------------|----------|".to_string());
             for (i, m) in moments.iter().enumerate() {
                 let rank = i + 1;
                 let time_label = format_time_fixed(m.chunk.start_offset_sec, max_total_secs);
@@ -430,18 +432,18 @@ fn print_moments_table(video_id: &str, moments: &[TopMoment], strategy: &RankStr
                     let diff = p - m.chunk.start_offset_sec;
                     format_time_fixed(diff.abs(), max_total_secs)
                 }).unwrap_or_default();
-                println!(
+                lines.push(format!(
                     "| {} | {} | {} | {} | {} | {} | {} | {} |",
                     rank, link, format_time_fixed(m.chunk.end_offset_sec - m.chunk.start_offset_sec, max_total_secs),
                     m.chunk.unique_authors, m.chunk.total_messages,
                     peak_at, peak_uniq, lookback,
-                );
+                ));
             }
         }
         RankStrategy::ZScoreUnique
         | RankStrategy::UniqueAuthors => {
-            println!("| Rank | Time Range | Duration | Unique Authors | Messages | Z-Score |");
-            println!("|------|------------|----------|----------------|----------|---------|");
+            lines.push("| Rank | Time Range | Duration | Unique Authors | Messages | Z-Score |".to_string());
+            lines.push("|------|------------|----------|----------------|----------|---------|".to_string());
             for (i, m) in moments.iter().enumerate() {
                 let rank = i + 1;
                 let start_label = format_time_fixed(m.chunk.start_offset_sec, max_total_secs);
@@ -449,16 +451,16 @@ fn print_moments_table(video_id: &str, moments: &[TopMoment], strategy: &RankStr
                 let youtube_url = format!("https://www.youtube.com/watch?v={}&t={}s", video_id, m.chunk.start_offset_sec);
                 let link = format!("[{} - {}]({})", start_label, end_label, youtube_url);
                 let z_str = m.z_score.map(|z| format!("{:.2}", z)).unwrap_or_default();
-                println!(
+                lines.push(format!(
                     "| {} | {} | {} | {} | {} | {} |",
                     rank, link, format_time_fixed(m.chunk.end_offset_sec - m.chunk.start_offset_sec, max_total_secs),
                     m.chunk.unique_authors, m.chunk.total_messages, z_str,
-                );
+                ));
             }
         }
         RankStrategy::MessageRate => {
-            println!("| Rank | Time Range | Duration | Unique Authors | Messages | Msg/sec | Z-Score |");
-            println!("|------|------------|----------|----------------|----------|---------|---------|");
+            lines.push("| Rank | Time Range | Duration | Unique Authors | Messages | Msg/sec | Z-Score |".to_string());
+            lines.push("|------|------------|----------|----------------|----------|---------|---------|".to_string());
             for (i, m) in moments.iter().enumerate() {
                 let rank = i + 1;
                 let start_label = format_time_fixed(m.chunk.start_offset_sec, max_total_secs);
@@ -467,15 +469,17 @@ fn print_moments_table(video_id: &str, moments: &[TopMoment], strategy: &RankStr
                 let link = format!("[{} - {}]({})", start_label, end_label, youtube_url);
                 let rate_str = format!("{:.1}", m.message_rate);
                 let z_str = m.z_score.map(|z| format!("{:.2}", z)).unwrap_or_default();
-                println!(
+                lines.push(format!(
                     "| {} | {} | {} | {} | {} | {} | {} |",
                     rank, link, format_time_fixed(m.chunk.end_offset_sec - m.chunk.start_offset_sec, max_total_secs),
                     m.chunk.unique_authors, m.chunk.total_messages, rate_str, z_str,
-                );
+                ));
             }
         }
     }
+    lines
 }
+
 
 /// Query top N most active chunks for a given video ID.
 pub fn print_top_moments(
@@ -503,18 +507,40 @@ pub fn print_top_moments(
         .optional()
         .with_context(|| format!("No data for video ID: {}", video_id))?;
 
-    if let Some(ref t) = title {
-        println!("Video: {}", t);
+    let title_display = title.as_deref().unwrap_or("Unknown");
+
+    // Count total and member chatters (before loading filtered chunks)
+    let all_unique: i64 = if members_only {
+        0
     } else {
-        eprintln!("Warning: no metadata for video ID: {}", video_id);
-    }
-    println!("Video ID: {}", video_id);
+        conn
+            .query_row(
+                "SELECT COUNT(DISTINCT author_channel_id) FROM live_chat WHERE video_id = ?",
+                [video_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    };
+    let member_unique: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT author_channel_id) FROM live_chat WHERE video_id = ? AND is_member = 1",
+            [video_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let non_member_unique = all_unique.saturating_sub(member_unique);
+
+    // Build header
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("## {}", title_display));
+    lines.push(String::new());
+    lines.push(format!("**Video ID:** `{}`", video_id));
+    lines.push(String::new());
     if members_only {
-        println!("Top {} moments ({} strategy, {} chunks) — members only", n, rank_by, format_time(chunk_duration));
+        lines.push(format!("Top {} moments ({} strategy, {} chunks) — members only", n, rank_by, format_time(chunk_duration)));
     } else {
-        println!("Top {} moments ({} strategy, {} chunks)", n, rank_by, format_time(chunk_duration));
+        lines.push(format!("Top {} moments ({} strategy, {} chunks)", n, rank_by, format_time(chunk_duration)));
     }
-    println!();
 
     // Get the time range of the video chat
     let (_, max_offset, total_messages): (i64, i64, i64) = conn
@@ -535,17 +561,23 @@ pub fn print_top_moments(
         .with_context(|| format!("No data for video ID: {}", video_id))?;
 
     let total_secs = max_offset / 1000;
-    println!("Stream duration: {} seconds ({})", total_secs, format_time(total_secs));
-    println!("Total messages: {}", total_messages);
-    println!("Chunk size: {} seconds ({})", chunk_duration, format_time(chunk_duration));
-    println!("Number of chunks: {}", (total_secs / chunk_duration).max(1));
-    println!();
+    lines.push(String::new());
+    lines.push(format!("**Stream duration:** {} seconds ({})", total_secs, format_time(total_secs)));
+    lines.push(format!("**Total messages:** {}", total_messages));
+    lines.push(format!("**Chunk size:** {} seconds ({})", chunk_duration, format_time(chunk_duration)));
+    lines.push(format!("**Number of chunks:** {}", (total_secs / chunk_duration).max(1)));
+    lines.push(String::new());
 
     // Load all chunk stats in a single pass
     let chunks = load_chunk_stats(&conn, video_id, chunk_duration, members_only)?;
 
     if chunks.is_empty() {
-        println!("No data available for this video.");
+        let output = lines.join("\n") + "\nNo data available for this video.\n";
+        if std::io::stdout().is_terminal() {
+            termimad::print_text(&output);
+        } else {
+            println!("{}", output);
+        }
         return Ok(());
     }
 
@@ -557,20 +589,12 @@ pub fn print_top_moments(
         RankStrategy::MessageRate => pick_message_rate_top(&chunks, n),
     };
 
-    // Print results
-    print_moments_table(video_id, &moments, &rank_by, total_secs);
+    // Build moments table
+    let table_lines = build_moments_table(video_id, &moments, &rank_by, total_secs);
+    lines.push(table_lines.join("\n"));
+    lines.push(String::new());
 
-    println!();
-
-    // Also print summary statistics
-    let all_unique: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT author_channel_id) FROM live_chat WHERE video_id = ?",
-            [video_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
+    // Summary statistics
     let avg_unique: f64 = if chunks.is_empty() {
         0.0
     } else {
@@ -579,30 +603,41 @@ pub fn print_top_moments(
 
     let max_unique: usize = chunks.iter().map(|c| c.unique_authors).max().unwrap_or(0);
 
-    println!("--- Summary ---");
-    println!("Total unique chatter: {}", all_unique);
-    println!("Average unique chatter per chunk: {:.1}", avg_unique);
-    println!("Peak unique chatter: {}", max_unique);
-    println!(
-        "Peak chunk: {} ({})",
+    lines.push("---".to_string());
+    lines.push(String::new());
+    lines.push("## Summary".to_string());
+    lines.push(String::new());
+    lines.push(format!("**Total unique chatter:** {} ({} members, {} non-members)", all_unique, member_unique, non_member_unique));
+    lines.push(format!("**Average unique chatter per chunk:** {:.1}", avg_unique));
+    lines.push(format!("**Peak unique chatter:** {}", max_unique));
+    lines.push(format!(
+        "**Peak chunk:** {} ({} unique authors)",
         format_time(moments.first().map(|m| m.chunk.start_offset_sec).unwrap_or(0)),
         moments.first()
             .map(|m| format!("{} unique authors", m.chunk.unique_authors))
             .unwrap_or_default()
-    );
+    ));
 
     // Extra info for rolling-peak
     if rank_by == RankStrategy::RollingPeak {
         if let Some(peak) = moments.first().and_then(|m| m.peak_offset_sec) {
-            println!(
-                "Peak occurred at: {} ({} unique authors)",
+            lines.push(format!(
+                "**Peak occurred at:** {} ({} unique authors)",
                 format_time(peak),
                 moments.first().and_then(|m| m.peak_unique).unwrap_or(0)
-            );
+            ));
         }
-        println!("Lookback: {} seconds", lookback_sec);
-        println!("Rolling window: {} chunks", rolling_window);
+        lines.push(format!("**Lookback:** {} seconds", lookback_sec));
+        lines.push(format!("**Rolling window:** {} chunks", rolling_window));
+    }
+
+    let markdown = lines.join("\n");
+    if std::io::stdout().is_terminal() {
+        termimad::print_text(&markdown);
+    } else {
+        println!("{}", markdown);
     }
 
     Ok(())
 }
+
