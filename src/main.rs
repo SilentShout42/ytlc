@@ -1,7 +1,9 @@
 mod parser;
 mod search;
+mod stats;
 
 use clap::{Parser, Subcommand};
+use std::str::FromStr;
 #[derive(Debug, Clone)]
 pub struct DbConfig {
     pub db_path: String,
@@ -52,6 +54,30 @@ enum Commands {
 
     #[command(about = "Test the database connection and show basic stats.")]
     Dbcheck,
+
+    #[command(about = "Show top chat activity moments across a stream, split into time chunks.")]
+    Stats {
+        #[arg(help = "YouTube video ID to analyze.")]
+        video_id: String,
+
+        #[arg(long, default_value_t = 10, help = "Number of top moments to show.")]
+        count: usize,
+
+        #[arg(short = 'd', long, default_value = "5m", help = "Chunk size as time expression (e.g. 30s, 5m, 1h).")]
+        chunk: String,
+
+        #[arg(long, default_value = "z-score-unique", value_parser = stats::RankStrategy::from_str, help = "Ranking strategy: z-score-unique, unique-authors, message-rate, rolling-peak")]
+        rank_by: stats::RankStrategy,
+
+        #[arg(long, default_value_t = 120, help = "Lookback seconds before peak (rolling-peak strategy).")]
+        lookback: i64,
+
+        #[arg(long, default_value_t = 3, help = "Rolling average window in chunks (rolling-peak strategy).")]
+        rolling_window: usize,
+
+        #[arg(long, help = "Only consider messages from channel members.")]
+        members_only: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -88,6 +114,18 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Dbcheck => {
             search::db_check(&db_config)?;
+        }
+        Commands::Stats {
+            video_id,
+            count,
+            chunk,
+            rank_by,
+            lookback,
+            rolling_window,
+            members_only,
+        } => {
+            let chunk_secs = stats::parse_duration(&chunk)?;
+            stats::print_top_moments(&db_config, &video_id, count, chunk_secs, rank_by, lookback, rolling_window, members_only)?;
         }
     }
 

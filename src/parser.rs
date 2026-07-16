@@ -150,6 +150,22 @@ struct AuthorBadge {
 #[derive(Debug, Clone, Deserialize)]
 struct BadgeRenderer {
     icon: Option<BadgeIcon>,
+    #[serde(rename = "customThumbnail")]
+    custom_thumbnail: Option<CustomThumbnail>,
+    tooltip: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CustomThumbnail {
+    #[serde(rename = "thumbnails")]
+    thumbnails: Option<Vec<Thumbnail>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Thumbnail {
+    url: Option<String>,
+    width: Option<u64>,
+    height: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -176,6 +192,7 @@ pub struct ChatMessage {
     pub message: String,
     pub is_moderator: bool,
     pub is_channel_owner: bool,
+    pub is_member: bool,
     pub video_offset_time_msec: Option<i64>,
     pub video_offset_time_text: String,
     pub filename: String,
@@ -188,6 +205,9 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
     let content = std::fs::read_to_string(&canonical)?;
 
     let mut messages = Vec::new();
+    // Track the earliest renderer timestamp to compute relative offsets when
+    // the replay action lacks videoOffsetTimeMsec.
+    let mut first_timestamp_usec: Option<i64> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -225,12 +245,6 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
                 None => continue,
             };
 
-            // Extract video_offset_time_msec from top-level replay
-            let video_offset_time_msec = replay
-                .video_offset_time_msec
-                .as_ref()
-                .and_then(|v| v.parse::<i64>().ok());
-
             // Extract timestamp from microseconds (string or int)
             let timestamp_usec = renderer
                 .timestamp_usec
@@ -243,6 +257,25 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
             let timestamp = DateTime::from_timestamp_micros(timestamp_usec)
                 .unwrap_or_default();
 
+            // Extract video_offset_time_msec from top-level replay.
+            // If missing, compute a relative offset from the earliest renderer timestamp.
+            let video_offset_time_msec = match replay.video_offset_time_msec {
+                Some(ref v) => v.parse::<i64>().ok(),
+                None => {
+                    // Fallback: relative offset from first message's timestamp
+                    match first_timestamp_usec {
+                        Some(first) if timestamp_usec > first => {
+                            Some((timestamp_usec - first) / 1000)
+                        }
+                        Some(_) => Some(0),
+                        None => {
+                            first_timestamp_usec = Some(timestamp_usec);
+                            Some(0)
+                        }
+                    }
+                }
+            };
+
             // Extract message runs
             let runs = renderer
                 .message
@@ -253,6 +286,7 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
             // Extract badge types
             let badge_types = renderer
                 .author_badges
+                .as_ref()
                 .map(|badges| {
                     badges
                         .iter()
@@ -269,6 +303,24 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
 
             let is_moderator = badge_types.iter().any(|t| t == "MODERATOR");
             let is_channel_owner = badge_types.iter().any(|t| t == "OWNER");
+            // Member badges have a customThumbnail (no iconType) and tooltip containing "Member"
+            let is_member = renderer
+                .author_badges
+                .as_ref()
+                .is_some_and(|badges| {
+                    badges.iter().any(|b| {
+                        let has_custom = b
+                            .live_chat_author_badge_renderer
+                            .as_ref()
+                            .is_some_and(|r| r.custom_thumbnail.is_some());
+                        let has_member_tooltip = b
+                            .live_chat_author_badge_renderer
+                            .as_ref()
+                            .and_then(|r| r.tooltip.as_ref())
+                            .map_or(false, |t| t.contains("Member"));
+                        has_custom || has_member_tooltip
+                    })
+                });
 
             messages.push(ChatMessage {
                 message_id: renderer.id,
@@ -284,6 +336,7 @@ fn parse_live_chat_json(path: &Path) -> Result<Vec<ChatMessage>> {
                 message: parse_message_runs(&runs),
                 is_moderator,
                 is_channel_owner,
+                is_member,
                 video_offset_time_msec,
                 video_offset_time_text: renderer
                     .timestamp_text
@@ -341,6 +394,7 @@ fn create_tables(conn_path: &std::path::Path) -> Result<()> {
             message TEXT NOT NULL,
             is_moderator BOOLEAN NOT NULL DEFAULT 0,
             is_channel_owner BOOLEAN NOT NULL DEFAULT 0,
+            is_member BOOLEAN NOT NULL DEFAULT 0,
             video_offset_time_msec INTEGER,
             video_offset_time_text TEXT,
             filename TEXT NOT NULL
@@ -386,8 +440,8 @@ fn insert_messages(conn_path: &std::path::Path, messages: &[ChatMessage]) -> Res
     let mut stmt = conn.prepare(r#"
         INSERT OR REPLACE INTO live_chat (
             message_id, timestamp, video_id, author, author_channel_id, message,
-            is_moderator, is_channel_owner, video_offset_time_msec, video_offset_time_text, filename
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            is_moderator, is_channel_owner, is_member, video_offset_time_msec, video_offset_time_text, filename
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     "#)?;
 
     for m in deduped {
@@ -400,6 +454,7 @@ fn insert_messages(conn_path: &std::path::Path, messages: &[ChatMessage]) -> Res
             &m.message,
             &m.is_moderator,
             &m.is_channel_owner,
+            &m.is_member,
             m.video_offset_time_msec.map(|v| v as i64),
             &m.video_offset_time_text,
             &m.filename,
