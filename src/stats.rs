@@ -574,7 +574,20 @@ pub fn print_top_moments(
     if chunks.is_empty() {
         let output = lines.join("\n") + "\nNo data available for this video.\n";
         if std::io::stdout().is_terminal() {
-            termimad::print_text(&output);
+            let mut opts = comrak::Options::default();
+            opts.extension.table = true;
+            let html = comrak::markdown_to_html(&output, &opts);
+            let html_path = format!("/tmp/ytlc-stats-{}.html", std::process::id());
+            if std::fs::write(&html_path, &html).is_ok() {
+                if std::process::Command::new("open").arg(&html_path).spawn().is_ok()
+                    || std::process::Command::new("xdg-open").arg(&html_path).spawn().is_ok()
+                {
+                    println!("Opened results in browser: {}", html_path);
+                    return Ok(());
+                }
+                std::fs::remove_file(&html_path).ok();
+            }
+            println!("{}", output);
         } else {
             println!("{}", output);
         }
@@ -632,9 +645,43 @@ pub fn print_top_moments(
     }
 
     let markdown = lines.join("\n");
+
+    // Render markdown to HTML using comrak for proper formatting
+    let mut opts = comrak::Options::default();
+    opts.extension.table = true;
+    let html = comrak::markdown_to_html(&markdown, &opts);
+
     if std::io::stdout().is_terminal() {
-        termimad::print_text(&markdown);
+        // Try to open HTML in browser for best rendering
+        let html_path = format!("/tmp/ytlc-stats-{}.html", std::process::id());
+        if std::fs::write(&html_path, &html).is_ok() {
+            // Try macOS open command
+            if std::process::Command::new("open")
+                .arg(&html_path)
+                .spawn()
+                .is_ok()
+            {
+                println!("Opened results in browser: {}", html_path);
+                return Ok(());
+            }
+            // Try xdg-open (Linux)
+            if std::process::Command::new("xdg-open")
+                .arg(&html_path)
+                .spawn()
+                .is_ok()
+            {
+                println!("Opened results in browser: {}", html_path);
+                return Ok(());
+            }
+            // Fallback: print raw markdown
+            eprintln!("Could not open browser. Raw markdown output:");
+            println!("{}", markdown);
+            std::fs::remove_file(&html_path).ok();
+        } else {
+            println!("{}", markdown);
+        }
     } else {
+        // When piped or redirected, output raw markdown for processing
         println!("{}", markdown);
     }
 
